@@ -1,32 +1,23 @@
-# Builder-in-Residence — Project Template
+# ♟️ OpenMove
 
-Template repo for BIR projects. Click **Use this template** to start your own copy.
+### A chessboard that moves its own pieces.
 
-## What goes where
+OpenMove is an open-source experiment to build a physical chessboard that can
+**detect moves, think with Stockfish, and physically move the pieces.**
 
-- `docs/` — project overview and weekly logs. This folder becomes your website.
-- `code/` — firmware, scripts, anything runnable.
-- `cad/` — 3D models and design files (STL, STEP, F3D, 3MF).
+Because apparently pressing a button to move a chess piece wasn't dramatic enough.
 
-## Preview the docs locally
+---
 
-    pip install mkdocs-material
-    mkdocs serve
+## What are we building?
 
-Open http://127.0.0.1:8000 and edit files under `docs/` — the preview reloads as you save.
+The idea is pretty simple:
 
-## Publishing (GitHub Pages)
+**You play a move → OpenMove understands it → the chess engine thinks → the board moves the piece.**
 
-Every push to `main` rebuilds and publishes the site automatically (see `.github/workflows/deploy.yml`).
+Under the board, an XY motion system does the dirty work, while magnetic sensing
+helps the board understand where the pieces are.
 
-First-time setup:
+Eventually, we want OpenMove to be able to play a complete game against you,
+without anyone touching the pieces.
 
-1. Push once and let the Action finish. It creates a `gh-pages` branch.
-2. Settings → Pages → Source: **Deploy from a branch** → `gh-pages` / `root`.
-
-Your site will be live at `https://<org-or-user>.github.io/<repo>/`.
-
-
-## Weekly logs
-
-Fill in `docs/week-01.md` through `docs/week-09.md` as you go. Keep them short: what you did, what's blocking you, what's next.

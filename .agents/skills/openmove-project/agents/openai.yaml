@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenMove Project"
+  short_description: "Safely advance the OpenMove prototype"
+  default_prompt: "Use $openmove-project to plan or make a safe OpenMove project change."
