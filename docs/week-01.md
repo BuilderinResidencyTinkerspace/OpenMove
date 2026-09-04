@@ -5,7 +5,8 @@
 ## What we did
 
 - Added an experimental, containerized Stockfish HTTP API scaffold under
-  [`stockfiash/`](../stockfiash/README.md). It validates a FEN position, runs a
+  [`stockfiash/`](https://github.com/BuilderinResidencyTinkerspace/OpenMove/tree/main/stockfiash).
+  It validates a FEN position, runs a
   bounded Stockfish search, and returns a UCI move.
 - Deployed it on the `az-vm` SSH target at
   `/home/mishal/openmove-stockfiash`, bound to VM loopback on port 8080. Verified
@@ -40,5 +41,5 @@
 
 ## Links
 
-- Code: [`stockfiash/`](../stockfiash/README.md)
+- Code: [`stockfiash/`](https://github.com/BuilderinResidencyTinkerspace/OpenMove/tree/main/stockfiash)
 - Photos / CAD:

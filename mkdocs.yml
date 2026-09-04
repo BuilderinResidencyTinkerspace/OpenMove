@@ -1,5 +1,5 @@
-site_name: BIR Project
-site_description: Builder-in-Residence project documentation
+site_name: OpenMove
+site_description: Engineering an experimental automatic chessboard
 
 theme:
   name: material
