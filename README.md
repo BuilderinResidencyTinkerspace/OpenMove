@@ -21,3 +21,19 @@ helps the board understand where the pieces are.
 Eventually, we want OpenMove to be able to play a complete game against you,
 without anyone touching the pieces.
 
+## Current status
+
+The project is still validating the XY motion prototype. A separate,
+experimental Stockfish API has also been built and deployed for early host-side
+integration testing. It is not connected to the physical board yet.
+
+## Repository layout
+
+- `cad/` — mechanical drawings and reference assets
+- `code/` — firmware and future host-controller software
+- `docs/` — project overview and weekly Builder-in-Residence logs
+- [`stockfiash/`](stockfiash/README.md) — experimental containerized Stockfish API
+
+The `stockfiash` spelling is retained for compatibility with the initial
+prototype directory. New chess logic belongs on the host computer; the Arduino
+remains limited to low-level hardware control.

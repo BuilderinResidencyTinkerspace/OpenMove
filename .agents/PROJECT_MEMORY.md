@@ -18,6 +18,10 @@ Early prototype — mechanical development. The immediate objective is to build 
 - A host computer will later handle chess logic, Stockfish, UI, and online integrations over USB serial.
 - Position detection is planned as an 8 × 8 Hall-effect sensor grid, but sensor, PCB, and scanning architecture are unvalidated.
 - Arduino Uno and servo are already available.
+- An experimental cloud Stockfish API exists in `stockfiash/` and is deployed on
+  the `az-vm` SSH target under `/home/mishal/openmove-stockfiash`. The container
+  is restart-enabled and bound to `127.0.0.1:8080`; it is not publicly reachable
+  and is not connected to the physical board.
 
 ## Unknown or unvalidated
 
@@ -25,6 +29,8 @@ Early prototype — mechanical development. The immediate objective is to build 
 - XY mechanics, accuracy, belt tension, rod rigidity, homing, and calibration
 - Permanent-magnet pickup/release mechanism, piece movement, and capture handling
 - Hall-sensor selection and 64-sensor architecture
+- Public DNS/TLS ingress, host-controller implementation, device authentication,
+  network reliability, engine strength/latency targets, and end-to-end move safety
 
 ## Documentation rule
 
