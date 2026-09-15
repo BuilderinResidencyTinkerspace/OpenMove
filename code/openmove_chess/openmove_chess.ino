@@ -41,10 +41,34 @@ float carriageX = 0.0f;
 float carriageY = 0.0f;
 bool manuallyHomed = false;
 bool motionAborted = false;
+uint8_t magnetAngle = MAGNET_RELEASE_ANGLE;
 
 char board[8][8];
 char inputLine[32];
 uint8_t inputLength = 0;
+bool discardLine = false;
+bool boardTrusted = false;
+
+void stopController() {
+  digitalWrite(ENABLE_PIN, HIGH);
+  magnetServo.write(MAGNET_RELEASE_ANGLE);
+  magnetAngle = MAGNET_RELEASE_ANGLE;
+  manuallyHomed = false;
+  boardTrusted = false;
+  motionAborted = true;
+  inputLength = 0;
+  discardLine = true;
+}
+
+bool emergencyRequested();
+
+void settleServo() {
+  unsigned long started = millis();
+  while (millis() - started < SERVO_SETTLE_MS) {
+    if (emergencyRequested()) { stopController(); return; }
+    delay(1);
+  }
+}
 
 void resetBoardState() {
   const char backRankWhite[8] = {'R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R'};
@@ -61,12 +85,14 @@ void resetBoardState() {
 
 void releaseMagnet() {
   magnetServo.write(MAGNET_RELEASE_ANGLE);
-  delay(SERVO_SETTLE_MS);
+  magnetAngle = MAGNET_RELEASE_ANGLE;
+  settleServo();
 }
 
 void engageMagnet() {
   magnetServo.write(MAGNET_ENGAGE_ANGLE);
-  delay(SERVO_SETTLE_MS);
+  magnetAngle = MAGNET_ENGAGE_ANGLE;
+  settleServo();
 }
 
 void waitMicros(unsigned long duration) {
@@ -81,6 +107,11 @@ bool emergencyRequested() {
   while (Serial.available()) {
     int incoming = Serial.read();
     if (incoming == '!' || incoming == 0x18) return true;
+    // Commands received during execution are rejected, never partly executed.
+    if (incoming == '\n' || incoming == '\r') {
+      if (discardLine) Serial.println(F("warning:command-discarded-while-busy"));
+      discardLine = false;
+    } else discardLine = true;
   }
   return false;
 }
@@ -90,6 +121,7 @@ void setDirection(uint8_t pin, long delta) {
 }
 
 bool moveMotors(long targetA, long targetB) {
+  if (motionAborted || !manuallyHomed) return false;
   long deltaA = targetA - motorAPosition;
   long deltaB = targetB - motorBPosition;
   unsigned long stepsA = labs(deltaA);
@@ -102,17 +134,12 @@ bool moveMotors(long targetA, long targetB) {
   setDirection(B_DIR_PIN, deltaB);
   delayMicroseconds(20);
 
-  long errorA = -(long)totalEvents / 2;
-  long errorB = -(long)totalEvents / 2;
-  motionAborted = false;
+  unsigned long errorA = totalEvents / 2;
+  unsigned long errorB = totalEvents / 2;
 
   for (unsigned long event = 0; event < totalEvents; event++) {
     if (emergencyRequested()) {
-      motionAborted = true;
-      digitalWrite(ENABLE_PIN, HIGH);
-      releaseMagnet();
-      manuallyHomed = false;
-      Serial.println(F("error:emergency-stop; position-lost; run HOME"));
+      stopController();
       return false;
     }
 
@@ -120,11 +147,11 @@ bool moveMotors(long targetA, long targetB) {
     bool stepB = false;
     errorA += stepsA;
     errorB += stepsB;
-    if (errorA >= 0) {
+    if (errorA >= totalEvents) {
       errorA -= totalEvents;
       stepA = true;
     }
-    if (errorB >= 0) {
+    if (errorB >= totalEvents) {
       errorB -= totalEvents;
       stepB = true;
     }
@@ -154,8 +181,7 @@ bool moveTo(float x, float y) {
     return false;
   }
 
-  // H-bot/CoreXY transform. On the validated OpenMove belt routing, logical X
-  // (a-file toward h-file) requires B = Y-X rather than X-Y.
+  // Selected H-bot mapping. Both physical directions and scale need measurement.
   long targetA = lroundf((x + y) * MOTOR_STEPS_PER_MM);
   long targetB = lroundf((y - x) * MOTOR_STEPS_PER_MM);
   if (!moveMotors(targetA, targetB)) return false;
@@ -198,7 +224,7 @@ bool pickupSquare(uint8_t file, uint8_t rank) {
   releaseMagnet();
   if (!moveTo(squareX(file), squareY(rank))) return false;
   engageMagnet();
-  return true;
+  return !motionAborted;
 }
 
 bool removePieceToGraveyard(uint8_t file, uint8_t rank) {
@@ -216,7 +242,7 @@ bool removePieceToGraveyard(uint8_t file, uint8_t rank) {
 
   releaseMagnet();
   Serial.println(F("warning:graveyard-drop-not-sensor-verified"));
-  return true;
+  return !motionAborted;
 }
 
 bool mechanicallyMovePiece(uint8_t sourceFile, uint8_t sourceRank,
@@ -224,7 +250,7 @@ bool mechanicallyMovePiece(uint8_t sourceFile, uint8_t sourceRank,
   if (!pickupSquare(sourceFile, sourceRank)) return false;
   if (!carryBetweenSquares(sourceFile, sourceRank, destinationFile, destinationRank)) return false;
   releaseMagnet();
-  return true;
+  return !motionAborted;
 }
 
 bool isWhite(char piece) { return piece >= 'A' && piece <= 'Z'; }
@@ -238,6 +264,10 @@ bool parseSquare(const char *text, uint8_t &file, uint8_t &rank) {
 }
 
 void executeChessMove(const char *moveText) {
+  if (!boardTrusted) {
+    Serial.println(F("error:confirm-standard-physical-board-with-RESETBOARD"));
+    return;
+  }
   if (!manuallyHomed) {
     Serial.println(F("error:not-homed; place carriage at board corner and send HOME"));
     return;
@@ -270,6 +300,12 @@ void executeChessMove(const char *moveText) {
   }
 
   char promotion = 0;
+  bool lastRank = (movingPiece == 'P' && destinationRank == 7) ||
+                  (movingPiece == 'p' && destinationRank == 0);
+  if (lastRank != (length == 5)) {
+    Serial.println(F("error:promotion-suffix-required-only-on-final-rank"));
+    return;
+  }
   if (length == 5) {
     promotion = moveText[4];
     if (promotion >= 'A' && promotion <= 'Z') promotion += 'a' - 'A';
@@ -289,6 +325,21 @@ void executeChessMove(const char *moveText) {
   uint8_t capturedFile = destinationFile;
   uint8_t capturedRank = destinationRank;
   if (enPassant) capturedRank = sourceRank;
+
+  // These special actions need history/physical confirmation. Reject before motion.
+  if (enPassant) {
+    Serial.println(F("error:en-passant-not-validated"));
+    return;
+  }
+  if (destinationPiece) {
+    Serial.println(F("error:capture-drop-outside-h5-not-physically-validated"));
+    return;
+  }
+  if ((movingPiece == 'K' || movingPiece == 'k') &&
+      abs((int)destinationFile - (int)sourceFile) == 2) {
+    Serial.println(F("error:castling-not-validated"));
+    return;
+  }
 
   if (destinationPiece || enPassant) {
     char capturedPiece = board[capturedFile][capturedRank];
@@ -332,6 +383,7 @@ void executeChessMove(const char *moveText) {
   if (promotion) {
     board[destinationFile][destinationRank] = isWhite(movingPiece) ? promotion - ('a' - 'A') : promotion;
     Serial.println(F("warning:promotion-requires-manual-physical-piece-replacement"));
+    boardTrusted = false;
   }
 
   Serial.print(F("ok:"));
@@ -345,8 +397,12 @@ void printStatus() {
   Serial.print(carriageX, 2);
   Serial.print(F(",y="));
   Serial.print(carriageY, 2);
-  Serial.print(F(",magnet=0deg-release,steps_per_mm="));
+  Serial.print(F(",magnet_angle="));
+  Serial.print(magnetAngle);
+  Serial.print(F(",steps_per_mm="));
   Serial.println(MOTOR_STEPS_PER_MM, 1);
+  Serial.print(F("info:board_confirmed="));
+  Serial.println(boardTrusted ? 1 : 0);
 }
 
 void processCommand(char *command) {
@@ -356,6 +412,7 @@ void processCommand(char *command) {
 
   if (!strcmp(command, "home")) {
     releaseMagnet();
+    if (motionAborted) return;
     motorAPosition = 0;
     motorBPosition = 0;
     carriageX = 0.0f;
@@ -365,6 +422,12 @@ void processCommand(char *command) {
     Serial.println(F("ok:manual-home-set-at-board-corner; motors-enabled"));
   } else if (!strcmp(command, "status")) {
     printStatus();
+  } else if (!strcmp(command, "magnet0")) {
+    releaseMagnet();
+    Serial.println(F("ok:magnet-released-at-0deg"));
+  } else if (!strcmp(command, "magnet90")) {
+    engageMagnet();
+    Serial.println(F("ok:magnet-engaged-at-90deg"));
   } else if (!strcmp(command, "jogx+10") || !strcmp(command, "jogx-10") ||
              !strcmp(command, "jogy+10") || !strcmp(command, "jogy-10")) {
     if (!manuallyHomed) {
@@ -381,11 +444,13 @@ void processCommand(char *command) {
     if (moveTo(targetX, targetY)) Serial.println(F("ok:jog-complete"));
   } else if (!strcmp(command, "resetboard")) {
     resetBoardState();
+    boardTrusted = true;
     Serial.println(F("ok:internal-board-reset-to-standard-starting-position"));
   } else if (!strcmp(command, "disable")) {
-    releaseMagnet();
     digitalWrite(ENABLE_PIN, HIGH);
     manuallyHomed = false;
+    if (magnetAngle != MAGNET_RELEASE_ANGLE) boardTrusted = false;
+    releaseMagnet();
     Serial.println(F("ok:motors-disabled; position-lost; run HOME before moves"));
   } else {
     executeChessMove(command);
@@ -393,6 +458,7 @@ void processCommand(char *command) {
 }
 
 void setup() {
+  digitalWrite(ENABLE_PIN, HIGH); // Set latch before output mode: avoid enable glitch.
   pinMode(A_STEP_PIN, OUTPUT);
   pinMode(B_STEP_PIN, OUTPUT);
   pinMode(A_DIR_PIN, OUTPUT);
@@ -403,12 +469,14 @@ void setup() {
   digitalWrite(B_STEP_PIN, LOW);
   digitalWrite(ENABLE_PIN, HIGH); // Safe startup: motors disabled until manual HOME.
 
+  Serial.begin(115200);
+  magnetServo.write(MAGNET_RELEASE_ANGLE);
   magnetServo.attach(SERVO_PIN);
   releaseMagnet();
   resetBoardState();
 
   Serial.begin(115200);
-  Serial.println(F("OpenMove chess motion controller 0.1"));
+  Serial.println(F("OpenMove chess motion controller 0.2"));
   Serial.println(F("ready:place carriage at board corner, then send HOME"));
 }
 
@@ -416,21 +484,24 @@ void loop() {
   while (Serial.available()) {
     char incoming = Serial.read();
     if (incoming == '\r' || incoming == '\n') {
+      if (discardLine) { discardLine = false; inputLength = 0; continue; }
       if (inputLength) {
         inputLine[inputLength] = 0;
+        motionAborted = false;
         processCommand(inputLine);
+        if (motionAborted) Serial.println(F("error:emergency-stop; position-and-board-uncertain"));
         inputLength = 0;
       }
     } else if (incoming == '!' || incoming == 0x18) {
-      digitalWrite(ENABLE_PIN, HIGH);
-      releaseMagnet();
-      manuallyHomed = false;
-      inputLength = 0;
+      stopController();
       Serial.println(F("error:emergency-stop; position-lost; run HOME"));
+    } else if (discardLine) {
+      continue;
     } else if (inputLength < sizeof(inputLine) - 1) {
       inputLine[inputLength++] = incoming;
     } else {
       inputLength = 0;
+      discardLine = true;
       Serial.println(F("error:command-too-long"));
     }
   }
