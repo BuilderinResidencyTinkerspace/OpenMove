@@ -81,10 +81,19 @@ class SerialPort:
 
 
 class OpenMoveTUI:
-    def __init__(self, screen: curses.window, serial: SerialPort) -> None:
+    def __init__(
+        self,
+        screen: curses.window,
+        serial: SerialPort,
+        home_on_start: bool = False,
+        reset_on_start: bool = False,
+    ) -> None:
         self.screen = screen
         self.serial = serial
+        self.home_on_start = home_on_start
+        self.reset_on_start = reset_on_start
         self.lines: deque[str] = deque(maxlen=200)
+        self.startup_commands: deque[str] = deque()
         self.partial = ""
         self.last_command = "none"
         self.notice = "External power state is your responsibility."
@@ -119,9 +128,13 @@ class OpenMoveTUI:
                 self.log("<", line)
                 if line.startswith("ready:"):
                     self.controller_ready = True
-                if line.startswith(("ok:", "error:", "ready:")):
+                if line.startswith(("ok:", "error:")):
                     self.command_pending = False
                     curses.flushinp() # Discard accumulated key repeat after a movement.
+                    if line.startswith("error:"):
+                        self.startup_commands.clear()
+                    elif self.startup_commands:
+                        self.send(self.startup_commands.popleft())
 
     def add(self, row: int, col: int, text: str, style: int = 0) -> None:
         height, width = self.screen.getmaxyx()
@@ -294,8 +307,13 @@ class OpenMoveTUI:
             self.draw()
             time.sleep(0.05)
 
-        self.log("*", "Requesting controller status.")
-        self.send("status")
+        if self.home_on_start:
+            self.startup_commands.append("HOME")
+        if self.reset_on_start:
+            self.startup_commands.append("RESETBOARD")
+        self.startup_commands.append("status")
+        self.log("*", "Running controller startup sequence.")
+        self.send(self.startup_commands.popleft())
 
         while self.running:
             self.poll_serial()
@@ -311,6 +329,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OpenMove Arduino hardware-test TUI")
     parser.add_argument("--port", default="/dev/ttyUSB0", help="Arduino serial port")
     parser.add_argument("--baud", type=int, default=115200, choices=sorted(BAUD_RATES))
+    parser.add_argument(
+        "--home",
+        action="store_true",
+        help="set the current physical carriage position as a1 home at startup",
+    )
+    parser.add_argument(
+        "--reset",
+        "--reset-board",
+        dest="reset_on_start",
+        action="store_true",
+        help="reset firmware occupancy to the standard board at startup",
+    )
     return parser.parse_args()
 
 
@@ -326,7 +356,14 @@ def main() -> int:
         return 1
 
     try:
-        curses.wrapper(lambda screen: OpenMoveTUI(screen, serial).run())
+        curses.wrapper(
+            lambda screen: OpenMoveTUI(
+                screen,
+                serial,
+                home_on_start=args.home,
+                reset_on_start=args.reset_on_start,
+            ).run()
+        )
     except KeyboardInterrupt:
         serial.emergency_stop()
     except OSError as error:
