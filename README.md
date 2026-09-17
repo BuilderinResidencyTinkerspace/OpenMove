@@ -78,8 +78,7 @@ deployment constraints, security requirements, and failure handling.
 ## Documentation
 
 - [Project overview](docs/index.md)
-- [Week 1 engineering log](docs/week-01.md)
-- [Weeks 2–9](docs/) — reserved weekly logs; no work is claimed until recorded
+- [Week 00 engineering log](docs/week-00.md)
 
 ## Next engineering steps
 

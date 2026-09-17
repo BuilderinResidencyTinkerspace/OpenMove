@@ -23,7 +23,7 @@ Validate the XY motion prototype. Do not begin position sensing, chess logic, St
 
 ## Documentation and memory
 
-- Preserve the Builder-in-Residence template: `docs/index.md` is the overview and `docs/week-01.md` through `docs/week-09.md` are weekly logs.
+- Preserve the Builder-in-Residence template: `docs/index.md` is the overview and `docs/week-00.md` is the current weekly log.
 - Use the relevant weekly log for actual work, blockers, decisions, experiments, and links. Do not create separate meeting, experiment, decision, or BOM documentation sections.
 - Update `.agents/PROJECT_MEMORY.md` when the factual project state changes. This is agent context, not public project documentation.
 - Link implementation, CAD, or photos from the relevant weekly log when they exist.

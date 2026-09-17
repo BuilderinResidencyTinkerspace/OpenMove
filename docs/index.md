@@ -104,14 +104,4 @@ avoid testing the actual invention.
 
 ## Weekly logs
 
-- [Week 1](week-01.md) — cloud engine scaffold, deployment, tests, and benchmarks
-- [Week 2](week-02.md)
-- [Week 3](week-03.md)
-- [Week 4](week-04.md)
-- [Week 5](week-05.md)
-- [Week 6](week-06.md)
-- [Week 7](week-07.md)
-- [Week 8](week-08.md)
-- [Week 9](week-09.md)
-
-Empty weekly logs are placeholders and do not imply completed work.
+- [Week 00](week-00.md)

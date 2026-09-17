@@ -51,4 +51,4 @@ Early prototype — mechanical development. The immediate objective is to build 
 
 ## Documentation rule
 
-Use only `docs/week-01.md` through `docs/week-09.md` for project reporting. Record actual work, blockers, decisions, experiments, and links in the relevant week; do not create separate meeting, experiment, decision, or BOM documentation sections.
+Use `docs/week-00.md` for project reporting. Record actual work, blockers, decisions, experiments, and links there; do not create separate meeting, experiment, decision, or BOM documentation sections.
