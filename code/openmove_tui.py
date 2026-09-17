@@ -119,8 +119,7 @@ class OpenMoveTUI:
                 self.log("<", line)
                 if line.startswith("ready:"):
                     self.controller_ready = True
-                if line.startswith(("ok:", "error:", "ready:")) or (
-                    self.last_command == "status" and line.startswith("status:")):
+                if line.startswith(("ok:", "error:", "ready:")):
                     self.command_pending = False
                     curses.flushinp() # Discard accumulated key repeat after a movement.
 
@@ -146,7 +145,7 @@ class OpenMoveTUI:
         controls = [
             f"Motion ({self.jog_mm} mm):   arrows = X/Y jog   c = toggle 1/10 mm",
             "Origin:          h = set a1 square centre as HOME",
-            "Servo:           0 = release at 0 deg   9 = engage at 90 deg",
+            "Actuator:        0 = retract/release   9 = extend/engage",
             "Position:        g = move magnet to a square centre, e.g. e3",
             "Chess:           m = enter move, e.g. e2e4",
             "Controller:      s = status   r = reset internal board   d = disable motors",
@@ -266,9 +265,9 @@ class OpenMoveTUI:
         elif key in (ord("h"), ord("H")):
             self.confirm_home()
         elif key == ord("0"):
-            self.send("magnet0")
+            self.send("actuator_retract")
         elif key == ord("9"):
-            self.send("magnet90")
+            self.send("actuator_extend")
         elif key in (ord("m"), ord("M")):
             self.enter_move()
         elif key in (ord("g"), ord("G")):

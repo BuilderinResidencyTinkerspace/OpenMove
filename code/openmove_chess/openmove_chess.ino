@@ -8,7 +8,7 @@ const uint8_t B_STEP_PIN = 3;
 const uint8_t A_DIR_PIN = 5;
 const uint8_t B_DIR_PIN = 6;
 const uint8_t ENABLE_PIN = 8;  // Active LOW.
-const uint8_t SERVO_PIN = 11;  // CNC Shield Z+ header.
+const uint8_t ACTUATOR_PIN = 11;  // CNC Shield Z+ header; PWM signal only.
 
 // Confirmed mechanics: 1.8 degree motors, GT2 belt, 20-tooth pulley,
 // and DRV8825 drivers configured for 1/8 microstepping.
@@ -31,9 +31,17 @@ const float GRAVEYARD_X_MM = MAX_X_MM;
 const float GRAVEYARD_Y_MM = 4.0f * SQUARE_SIZE_MM;
 const float GRAVEYARD_APPROACH_Y_MM = GRAVEYARD_Y_MM + HALF_SQUARE_MM;
 
-const uint8_t MAGNET_RELEASE_ANGLE = 0;
-const uint8_t MAGNET_ENGAGE_ANGLE = 90;
-const unsigned long SERVO_SETTLE_MS = 700;
+// MG90S with a custom 3D-printed linear mechanism. These are pulse widths.
+// User confirmed surface contact at 2100 us on 2026-09-17; 1000 us was clear
+// of the surface. Contact is visually calibrated, not sensed by the controller.
+const int ACTUATOR_RETRACT_US = 1000; // Magnet raised / piece released.
+const int ACTUATOR_EXTEND_US = 2100; // Confirmed surface contact.
+const int ACTUATOR_MIN_US = ACTUATOR_RETRACT_US;
+const int ACTUATOR_MAX_US = ACTUATOR_EXTEND_US;
+// Direct endpoint commands let the servo move at its native maximum speed.
+// Rated unloaded travel is ~300 ms over 180 degrees at 4.8 V. Allow 500 ms
+// before XY motion for the printed mechanism/load; this is not position feedback.
+const unsigned long ACTUATOR_SETTLE_MS = 500;
 
 // Conservative initial motion values. These require physical validation.
 const float START_STEP_RATE = 80.0f;
@@ -41,7 +49,7 @@ const float MAX_STEP_RATE = 2500.0f;
 const float STEP_ACCELERATION = 6000.0f;
 const unsigned int STEP_HIGH_US = 10;
 
-Servo magnetServo;
+Servo magnetActuator;
 
 long motorAPosition = 0;
 long motorBPosition = 0;
@@ -49,33 +57,41 @@ float carriageX = 0.0f;
 float carriageY = 0.0f;
 bool manuallyHomed = false;
 bool motionAborted = false;
-uint8_t magnetAngle = MAGNET_RELEASE_ANGLE;
+bool emergencyStopLatched = false;
+bool emergencyDuringCommand = false;
+int actuatorPulseUs = ACTUATOR_RETRACT_US;
+bool actuatorSettled = false; // True only after the travel wait completes.
 
 char board[8][8];
 char inputLine[32];
 uint8_t inputLength = 0;
 bool discardLine = false;
 bool boardTrusted = false;
+bool whiteToMove = true;
 
 void stopController() {
   digitalWrite(ENABLE_PIN, HIGH);
-  magnetServo.write(MAGNET_RELEASE_ANGLE);
-  magnetAngle = MAGNET_RELEASE_ANGLE;
+  magnetActuator.writeMicroseconds(ACTUATOR_RETRACT_US);
+  actuatorPulseUs = ACTUATOR_RETRACT_US;
+  actuatorSettled = false;
   manuallyHomed = false;
   boardTrusted = false;
   motionAborted = true;
+  emergencyStopLatched = true;
+  emergencyDuringCommand = true;
   inputLength = 0;
   discardLine = true;
 }
 
 bool emergencyRequested();
 
-void settleServo() {
+void settleActuator() {
   unsigned long started = millis();
-  while (millis() - started < SERVO_SETTLE_MS) {
+  while (millis() - started < ACTUATOR_SETTLE_MS) {
     if (emergencyRequested()) { stopController(); return; }
     delay(1);
   }
+  actuatorSettled = true;
 }
 
 void resetBoardState() {
@@ -89,18 +105,24 @@ void resetBoardState() {
     board[file][6] = 'p';
     board[file][7] = backRankBlack[file];
   }
+  whiteToMove = true;
+}
+
+void setActuatorPosition(int pulseUs) {
+  if (motionAborted) return;
+  if (actuatorSettled && actuatorPulseUs == pulseUs) return;
+  actuatorSettled = false;
+  magnetActuator.writeMicroseconds(pulseUs);
+  actuatorPulseUs = pulseUs;
+  settleActuator();
 }
 
 void releaseMagnet() {
-  magnetServo.write(MAGNET_RELEASE_ANGLE);
-  magnetAngle = MAGNET_RELEASE_ANGLE;
-  settleServo();
+  setActuatorPosition(ACTUATOR_RETRACT_US);
 }
 
 void engageMagnet() {
-  magnetServo.write(MAGNET_ENGAGE_ANGLE);
-  magnetAngle = MAGNET_ENGAGE_ANGLE;
-  settleServo();
+  setActuatorPosition(ACTUATOR_EXTEND_US);
 }
 
 void waitMicros(unsigned long duration) {
@@ -205,9 +227,17 @@ bool moveTo(float x, float y) {
 float squareX(uint8_t file) { return file * SQUARE_SIZE_MM; }
 float squareY(uint8_t rank) { return rank * SQUARE_SIZE_MM; }
 
-float safeHorizontalLane(uint8_t rank) {
-  if (rank == 7) return squareY(rank) - HALF_SQUARE_MM;
-  return squareY(rank) + HALF_SQUARE_MM;
+float departureLaneY(uint8_t sourceRank, uint8_t destinationRank) {
+  if (destinationRank > sourceRank) return squareY(sourceRank) + HALF_SQUARE_MM;
+  if (destinationRank < sourceRank) return squareY(sourceRank) - HALF_SQUARE_MM;
+  if (sourceRank == 7) return squareY(sourceRank) - HALF_SQUARE_MM;
+  return squareY(sourceRank) + HALF_SQUARE_MM;
+}
+
+float arrivalLaneY(uint8_t sourceRank, uint8_t destinationRank) {
+  if (destinationRank > sourceRank) return squareY(destinationRank) - HALF_SQUARE_MM;
+  if (destinationRank < sourceRank) return squareY(destinationRank) + HALF_SQUARE_MM;
+  return departureLaneY(sourceRank, destinationRank);
 }
 
 float safeVerticalLane(uint8_t sourceFile, uint8_t destinationFile) {
@@ -218,10 +248,18 @@ float safeVerticalLane(uint8_t sourceFile, uint8_t destinationFile) {
 
 bool carryBetweenSquares(uint8_t sourceFile, uint8_t sourceRank,
                          uint8_t destinationFile, uint8_t destinationRank) {
+  int fileDistance = abs((int)destinationFile - (int)sourceFile);
+  int rankDistance = abs((int)destinationRank - (int)sourceRank);
+  bool straightMove = sourceFile == destinationFile || sourceRank == destinationRank;
+  bool diagonalMove = fileDistance == rankDistance;
+  if (straightMove || diagonalMove) {
+    return moveTo(squareX(destinationFile), squareY(destinationRank));
+  }
+
   float sourceX = squareX(sourceFile);
-  float sourceLaneY = safeHorizontalLane(sourceRank);
+  float sourceLaneY = departureLaneY(sourceRank, destinationRank);
   float laneX = safeVerticalLane(sourceFile, destinationFile);
-  float destinationLaneY = safeHorizontalLane(destinationRank);
+  float destinationLaneY = arrivalLaneY(sourceRank, destinationRank);
   float destinationX = squareX(destinationFile);
 
   return moveTo(sourceX, sourceLaneY) &&
@@ -243,7 +281,8 @@ bool removePieceToGraveyard(uint8_t file, uint8_t rank) {
 
   // Enter an internal lane, approach the right edge between ranks 5 and 6,
   // then slide along the edge to the requested position outside h5.
-  float sourceLaneY = safeHorizontalLane(rank);
+  uint8_t graveyardRank = 4;
+  float sourceLaneY = departureLaneY(rank, graveyardRank);
   float internalRightLaneX = squareX(7) - HALF_SQUARE_MM;
   if (!moveTo(squareX(file), sourceLaneY) ||
       !moveTo(internalRightLaneX, sourceLaneY) ||
@@ -259,13 +298,125 @@ bool removePieceToGraveyard(uint8_t file, uint8_t rank) {
 bool mechanicallyMovePiece(uint8_t sourceFile, uint8_t sourceRank,
                            uint8_t destinationFile, uint8_t destinationRank) {
   if (!pickupSquare(sourceFile, sourceRank)) return false;
-  if (!carryBetweenSquares(sourceFile, sourceRank, destinationFile, destinationRank)) return false;
+  if (!carryBetweenSquares(sourceFile, sourceRank, destinationFile, destinationRank)) {
+    releaseMagnet();
+    return false;
+  }
   releaseMagnet();
   return !motionAborted;
 }
 
 bool isWhite(char piece) { return piece >= 'A' && piece <= 'Z'; }
 bool isBlack(char piece) { return piece >= 'a' && piece <= 'z'; }
+
+bool pathIsClear(uint8_t sourceFile, uint8_t sourceRank,
+                 uint8_t destinationFile, uint8_t destinationRank) {
+  int fileStep = destinationFile > sourceFile ? 1 : destinationFile < sourceFile ? -1 : 0;
+  int rankStep = destinationRank > sourceRank ? 1 : destinationRank < sourceRank ? -1 : 0;
+  int file = (int)sourceFile + fileStep;
+  int rank = (int)sourceRank + rankStep;
+
+  while (file != destinationFile || rank != destinationRank) {
+    if (board[file][rank]) return false;
+    file += fileStep;
+    rank += rankStep;
+  }
+  return true;
+}
+
+bool pieceAttacksSquare(char piece, uint8_t sourceFile, uint8_t sourceRank,
+                        uint8_t destinationFile, uint8_t destinationRank) {
+  int fileDelta = (int)destinationFile - (int)sourceFile;
+  int rankDelta = (int)destinationRank - (int)sourceRank;
+  int absoluteFileDelta = abs(fileDelta);
+  int absoluteRankDelta = abs(rankDelta);
+  char pieceType = isWhite(piece) ? piece + ('a' - 'A') : piece;
+
+  if (pieceType == 'p') {
+    int direction = isWhite(piece) ? 1 : -1;
+    return absoluteFileDelta == 1 && rankDelta == direction;
+  }
+  if (pieceType == 'n') {
+    return (absoluteFileDelta == 1 && absoluteRankDelta == 2) ||
+           (absoluteFileDelta == 2 && absoluteRankDelta == 1);
+  }
+  if (pieceType == 'k') return max(absoluteFileDelta, absoluteRankDelta) == 1;
+  if (pieceType == 'b') {
+    return absoluteFileDelta == absoluteRankDelta &&
+           pathIsClear(sourceFile, sourceRank, destinationFile, destinationRank);
+  }
+  if (pieceType == 'r') {
+    return (fileDelta == 0 || rankDelta == 0) &&
+           pathIsClear(sourceFile, sourceRank, destinationFile, destinationRank);
+  }
+  if (pieceType == 'q') {
+    bool straight = fileDelta == 0 || rankDelta == 0;
+    bool diagonal = absoluteFileDelta == absoluteRankDelta;
+    return (straight || diagonal) &&
+           pathIsClear(sourceFile, sourceRank, destinationFile, destinationRank);
+  }
+  return false;
+}
+
+bool pieceMoveIsValid(char piece, uint8_t sourceFile, uint8_t sourceRank,
+                      uint8_t destinationFile, uint8_t destinationRank) {
+  char destinationPiece = board[destinationFile][destinationRank];
+  char pieceType = isWhite(piece) ? piece + ('a' - 'A') : piece;
+  int fileDelta = (int)destinationFile - (int)sourceFile;
+  int rankDelta = (int)destinationRank - (int)sourceRank;
+
+  if (pieceType != 'p') {
+    return pieceAttacksSquare(piece, sourceFile, sourceRank, destinationFile, destinationRank);
+  }
+
+  int direction = isWhite(piece) ? 1 : -1;
+  uint8_t startingRank = isWhite(piece) ? 1 : 6;
+  if (fileDelta == 0 && !destinationPiece) {
+    if (rankDelta == direction) return true;
+    if (sourceRank == startingRank && rankDelta == 2 * direction) {
+      return !board[sourceFile][sourceRank + direction];
+    }
+  }
+  return abs(fileDelta) == 1 && rankDelta == direction && destinationPiece;
+}
+
+bool moveLeavesKingInCheck(char movingPiece, uint8_t sourceFile, uint8_t sourceRank,
+                           uint8_t destinationFile, uint8_t destinationRank) {
+  char destinationPiece = board[destinationFile][destinationRank];
+  board[sourceFile][sourceRank] = 0;
+  board[destinationFile][destinationRank] = movingPiece;
+
+  char king = isWhite(movingPiece) ? 'K' : 'k';
+  uint8_t kingFile = 0;
+  uint8_t kingRank = 0;
+  bool kingFound = false;
+  for (uint8_t file = 0; file < 8 && !kingFound; file++) {
+    for (uint8_t rank = 0; rank < 8; rank++) {
+      if (board[file][rank] == king) {
+        kingFile = file;
+        kingRank = rank;
+        kingFound = true;
+        break;
+      }
+    }
+  }
+
+  bool attacked = !kingFound;
+  for (uint8_t file = 0; file < 8 && !attacked; file++) {
+    for (uint8_t rank = 0; rank < 8; rank++) {
+      char attacker = board[file][rank];
+      if (attacker && isWhite(attacker) != isWhite(movingPiece) &&
+          pieceAttacksSquare(attacker, file, rank, kingFile, kingRank)) {
+        attacked = true;
+        break;
+      }
+    }
+  }
+
+  board[sourceFile][sourceRank] = movingPiece;
+  board[destinationFile][destinationRank] = destinationPiece;
+  return attacked;
+}
 
 bool parseSquare(const char *text, uint8_t &file, uint8_t &rank) {
   if (text[0] < 'a' || text[0] > 'h' || text[1] < '1' || text[1] > '8') return false;
@@ -309,6 +460,10 @@ void executeChessMove(const char *moveText) {
     Serial.println(F("error:destination-has-same-colour-piece"));
     return;
   }
+  if (isWhite(movingPiece) != whiteToMove) {
+    Serial.println(F("error:wrong-side-to-move"));
+    return;
+  }
 
   char promotion = 0;
   bool lastRank = (movingPiece == 'P' && destinationRank == 7) ||
@@ -327,15 +482,9 @@ void executeChessMove(const char *moveText) {
     }
   }
 
-  Serial.print(F("busy:"));
-  Serial.println(moveText);
-
   // En passant: diagonal pawn move to an empty destination.
   bool enPassant = (movingPiece == 'P' || movingPiece == 'p') &&
                    sourceFile != destinationFile && !destinationPiece;
-  uint8_t capturedFile = destinationFile;
-  uint8_t capturedRank = destinationRank;
-  if (enPassant) capturedRank = sourceRank;
 
   // These special actions need history/physical confirmation. Reject before motion.
   if (enPassant) {
@@ -351,45 +500,30 @@ void executeChessMove(const char *moveText) {
     Serial.println(F("error:castling-not-validated"));
     return;
   }
-
-  if (destinationPiece || enPassant) {
-    char capturedPiece = board[capturedFile][capturedRank];
-    if (enPassant &&
-        !((movingPiece == 'P' && capturedPiece == 'p') ||
-          (movingPiece == 'p' && capturedPiece == 'P'))) {
-      Serial.println(F("error:invalid-en-passant-board-state"));
-      return;
-    }
-    if (!capturedPiece || !removePieceToGraveyard(capturedFile, capturedRank)) {
-      Serial.println(F("error:capture-removal-failed; board-state-not-updated"));
-      return;
-    }
-    board[capturedFile][capturedRank] = 0;
+  if (!pieceMoveIsValid(movingPiece, sourceFile, sourceRank,
+                        destinationFile, destinationRank)) {
+    Serial.println(F("error:illegal-piece-movement-or-blocked-path"));
+    return;
+  }
+  if (moveLeavesKingInCheck(movingPiece, sourceFile, sourceRank,
+                            destinationFile, destinationRank)) {
+    Serial.println(F("error:move-leaves-king-in-check"));
+    return;
   }
 
+  Serial.print(F("busy:"));
+  Serial.println(moveText);
+
   if (!mechanicallyMovePiece(sourceFile, sourceRank, destinationFile, destinationRank)) {
+    boardTrusted = false;
+    if (motionAborted) return;
     Serial.println(F("error:piece-move-failed; physical-state-may-be-uncertain"));
     return;
   }
 
   board[sourceFile][sourceRank] = 0;
   board[destinationFile][destinationRank] = movingPiece;
-
-  // Castling: move the rook after the king.
-  if ((movingPiece == 'K' || movingPiece == 'k') &&
-      sourceRank == destinationRank &&
-      abs((int)destinationFile - (int)sourceFile) == 2) {
-    uint8_t rookSourceFile = destinationFile > sourceFile ? 7 : 0;
-    uint8_t rookDestinationFile = destinationFile > sourceFile ? destinationFile - 1 : destinationFile + 1;
-    char rook = board[rookSourceFile][sourceRank];
-    if (!rook || !mechanicallyMovePiece(rookSourceFile, sourceRank,
-                                        rookDestinationFile, sourceRank)) {
-      Serial.println(F("error:king-moved-but-castling-rook-failed"));
-      return;
-    }
-    board[rookSourceFile][sourceRank] = 0;
-    board[rookDestinationFile][sourceRank] = rook;
-  }
+  whiteToMove = !whiteToMove;
 
   if (promotion) {
     board[destinationFile][destinationRank] = isWhite(movingPiece) ? promotion - ('a' - 'A') : promotion;
@@ -428,8 +562,8 @@ void printStatus() {
   Serial.print(carriageX, 2);
   Serial.print(F(",y="));
   Serial.print(carriageY, 2);
-  Serial.print(F(",magnet_angle="));
-  Serial.print(magnetAngle);
+  Serial.print(F(",actuator_pulse_us="));
+  Serial.print(actuatorPulseUs);
   Serial.print(F(",steps_per_mm="));
   Serial.println(MOTOR_STEPS_PER_MM, 1);
   Serial.print(F("info:max_step_rate="));
@@ -438,6 +572,14 @@ void printStatus() {
   Serial.println(STEP_ACCELERATION, 1);
   Serial.print(F("info:board_confirmed="));
   Serial.println(boardTrusted ? 1 : 0);
+  Serial.print(F("info:side_to_move="));
+  Serial.println(whiteToMove ? F("white") : F("black"));
+  Serial.print(F("info:actuator_release_us="));
+  Serial.print(ACTUATOR_RETRACT_US);
+  Serial.print(F(",actuator_engage_us="));
+  Serial.print(ACTUATOR_EXTEND_US);
+  Serial.print(F(",actuator_settle_ms="));
+  Serial.println(ACTUATOR_SETTLE_MS);
   Serial.print(F("info:square_mm="));
   Serial.print(SQUARE_SIZE_MM, 2);
   Serial.print(F(",invert_a="));
@@ -446,6 +588,9 @@ void printStatus() {
   Serial.print(INVERT_B_DIR ? 1 : 0);
   Serial.print(F(",swap_xy="));
   Serial.println(SWAP_X_Y ? 1 : 0);
+  Serial.print(F("info:emergency_stop_latched="));
+  Serial.println(emergencyStopLatched ? 1 : 0);
+  Serial.println(F("ok:status"));
 }
 
 void processCommand(char *command) {
@@ -453,7 +598,14 @@ void processCommand(char *command) {
     if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
   }
 
+  if (emergencyStopLatched && strcmp(command, "home") && strcmp(command, "status")) {
+    Serial.println(F("error:emergency-stop-latched; place carriage at a1 centre and send HOME"));
+    return;
+  }
+
   if (!strcmp(command, "home")) {
+    emergencyStopLatched = false;
+    motionAborted = false;
     releaseMagnet();
     if (motionAborted) return;
     motorAPosition = 0;
@@ -465,12 +617,14 @@ void processCommand(char *command) {
     Serial.println(F("ok:manual-home-set-at-a1-centre; motors-enabled"));
   } else if (!strcmp(command, "status")) {
     printStatus();
-  } else if (!strcmp(command, "magnet0")) {
+  } else if (!strcmp(command, "actuator_retract") || !strcmp(command, "magnet0")) {
     releaseMagnet();
-    Serial.println(F("ok:magnet-released-at-0deg"));
-  } else if (!strcmp(command, "magnet90")) {
+    if (motionAborted) return;
+    Serial.println(F("ok:actuator-retracted; magnet-released"));
+  } else if (!strcmp(command, "actuator_extend") || !strcmp(command, "magnet90")) {
     engageMagnet();
-    Serial.println(F("ok:magnet-engaged-at-90deg"));
+    if (motionAborted) return;
+    Serial.println(F("ok:actuator-extended; magnet-engaged"));
   } else if (!strncmp(command, "goto ", 5)) {
     gotoSquare(command + 5);
   } else if (!strcmp(command, "jogx+10") || !strcmp(command, "jogx-10") ||
@@ -497,8 +651,9 @@ void processCommand(char *command) {
   } else if (!strcmp(command, "disable")) {
     digitalWrite(ENABLE_PIN, HIGH);
     manuallyHomed = false;
-    if (magnetAngle != MAGNET_RELEASE_ANGLE) boardTrusted = false;
+    if (actuatorPulseUs != ACTUATOR_RETRACT_US) boardTrusted = false;
     releaseMagnet();
+    if (motionAborted) return;
     Serial.println(F("ok:motors-disabled; position-lost; run HOME before moves"));
   } else {
     executeChessMove(command);
@@ -518,12 +673,12 @@ void setup() {
   digitalWrite(ENABLE_PIN, HIGH); // Safe startup: motors disabled until manual HOME.
 
   Serial.begin(115200);
-  magnetServo.write(MAGNET_RELEASE_ANGLE);
-  magnetServo.attach(SERVO_PIN);
-  releaseMagnet();
+  magnetActuator.writeMicroseconds(ACTUATOR_RETRACT_US);
+  magnetActuator.attach(ACTUATOR_PIN, ACTUATOR_MIN_US, ACTUATOR_MAX_US);
+  settleActuator();
   resetBoardState();
 
-  Serial.println(F("OpenMove chess motion controller 0.6"));
+  Serial.println(F("OpenMove chess motion controller 0.7"));
   Serial.println(F("ready:place carriage at a1 centre, then send HOME"));
 }
 
@@ -534,9 +689,11 @@ void loop() {
       if (discardLine) { discardLine = false; inputLength = 0; continue; }
       if (inputLength) {
         inputLine[inputLength] = 0;
-        motionAborted = false;
+        emergencyDuringCommand = false;
         processCommand(inputLine);
-        if (motionAborted) Serial.println(F("error:emergency-stop; position-and-board-uncertain"));
+        if (emergencyDuringCommand) {
+          Serial.println(F("error:emergency-stop; position-and-board-uncertain"));
+        }
         inputLength = 0;
       }
     } else if (incoming == '!' || incoming == 0x18) {
