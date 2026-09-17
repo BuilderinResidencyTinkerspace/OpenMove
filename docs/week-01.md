@@ -7,12 +7,13 @@
 This week was less “automatic chessboard” and more “can I make these motors do something without turning a driver into a small space heater?”
 
 I started experimenting with the Arduino Uno, CNC Shield V3, stepper drivers, and the stepper-motor power supply.
+
+
 <img width="870" height="447" alt="image" src="https://github.com/user-attachments/assets/e9a06f79-cc27-4874-8202-eb1a5f34cbc3" />
 <img width="733" height="327" alt="image" src="https://github.com/user-attachments/assets/e5aebdc2-d27c-4e62-8648-96d06f3b1f18" />
 
 
 The motion setup used:
-
 * Arduino Uno
 * CNC Shield V3
 * Two DRV8825 stepper drivers
