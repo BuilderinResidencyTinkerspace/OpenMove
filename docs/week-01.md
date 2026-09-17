@@ -7,6 +7,8 @@
 This week was less “automatic chessboard” and more “can I make these motors do something without turning a driver into a small space heater?”
 
 I started experimenting with the Arduino Uno, CNC Shield V3, stepper drivers, and the stepper-motor power supply.
+<img width="870" height="447" alt="image" src="https://github.com/user-attachments/assets/e9a06f79-cc27-4874-8202-eb1a5f34cbc3" />
+<img width="733" height="327" alt="image" src="https://github.com/user-attachments/assets/e5aebdc2-d27c-4e62-8648-96d06f3b1f18" />
 
 
 The motion setup used:
@@ -54,10 +56,3 @@ So the important result from this week was not “the drivers are perfectly conf
 * Use the 12 V, 3 A adapter as the bench power source for the stepper side.
 * Keep the DRV8825 VREF values at approximately 0.65 V until the driver hardware and current limits are properly verified.
 * Treat all motion hardware as experimental until it works reliably under a real mechanical load.
-
-## Next week
-
-* Run controlled motor and servo tests.
-* Check whether both drivers behave similarly under the same test conditions.
-* Identify the DRV8825 sense-resistor markings before making any current-limit changes.
-* Start connecting the electronics experiments to the first XY-motion prototype.
