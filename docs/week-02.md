@@ -1,4 +1,4 @@
-# Week 2 — Getting the Motion Electronics to Agree
+# Week 2  : Getting the Motion Electronics to Agree
 
 **Goal this week:** Verify that the Arduino, CNC Shield, motors, drivers, and servo could run together before attaching them to an actual mechanism.
 
@@ -7,6 +7,8 @@ The first week established the hardware direction. This week was about making it
 The setup was an Arduino Uno with a CNC Shield V3, two DRV8825 stepper drivers, two NEMA 17 motors, and a 12 V, 3 A adapter for the motor supply. A servo would eventually control the magnetic pickup mechanism, so it joined the test too.
 
 At this point, there was no chessboard mechanism attached. No belts, rods, carriage, or pieces. That was intentional. If the electronics could not behave on the desk, giving them an XY mechanism would only make the failure more expensive and harder to understand.
+
+<img width="733" height="327" alt="image" src="https://github.com/user-attachments/assets/44b3dea2-9b8f-4f55-b09f-58d114e383ea" />
 
 ## A small test with a useful job
 
@@ -42,23 +44,3 @@ Earlier testing had produced a motor hum, and the Y-axis driver appeared hotter 
 The coordinated low-speed test worked, but it did not explain that difference. It could have been the motor wiring, driver-current configuration, the specific driver board, or something else in the setup. None of those possibilities should be promoted to a conclusion without testing them separately.
 
 The motors also had not been tested with belts, rods, carriage friction, or the weight of a pickup system. A motor moving freely on a desk has not yet earned the right to be called an XY mechanism.
-
-## What I learned
-
-* The Uno, CNC Shield, two drivers, motors, and servo can run in one controlled bench test.
-* The 12 V, 3 A adapter powered the stepper side for that test.
-* The two VREF readings were approximately 0.65 V.
-* A successful motion test does not validate current limiting, driver temperature, or mechanical reliability.
-* The physical board still needed to exist.
-
-## Next week
-
-* Inspect both DRV8825 boards and identify their sense-resistor values.
-* Compare driver temperatures during repeatable tests.
-* Test each motor independently.
-* Start building the first XY-motion prototype and find out which assumptions survive contact with hardware.
-
-## Links
-
-* Code: `code/hardware_smoke_test/`
-* Photos / CAD:
