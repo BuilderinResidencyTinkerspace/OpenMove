@@ -31,6 +31,12 @@ Early prototype — mechanical development. The immediate objective is to build 
 - Confirmed diagnostic hardware uses two DRV8825 drivers. Confirmed CNC Shield
   signals are X STEP/DIR D2/D5, Y STEP/DIR D3/D6, shared active-low ENABLE D8,
   and MG90S servo signal D11 through the shield's Z+ header.
+- Experimental chess-controller firmware version 0.9 automates white moves only;
+  black moves are made physically by the human and then entered to update the
+  internal board without carriage motion. Automated knight moves are disabled
+  until square-boundary clearance is physically validated. It compiled for Uno
+  and was uploaded to `/dev/ttyUSB0` on 2026-09-18. Piece routing remains
+  physically unvalidated.
 - The user reports both DRV8825 VREF settings are approximately 0.65 V. The
   current-sense resistor markings are not identified, so the resulting limits
   remain unknown. If a carrier is R100, 0.65 V corresponds to about 1.3 A/phase;

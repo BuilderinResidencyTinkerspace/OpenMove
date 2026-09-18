@@ -16,6 +16,14 @@ from collections import deque
 
 
 BAUD_RATES = {115200: termios.B115200}
+COORDINATE_MOVE = re.compile(r"[a-h][1-8][a-h][1-8][qrbn]?", re.IGNORECASE)
+SAN_MOVE = re.compile(
+    r"(?:[KQRBN][a-h]?[1-8]?x?|[a-h]x)?[a-h][1-8](?:=[QRBN])?",
+)
+
+
+def valid_move_text(move: str) -> bool:
+    return bool(COORDINATE_MOVE.fullmatch(move) or SAN_MOVE.fullmatch(move))
 
 
 class SerialPort:
@@ -96,15 +104,32 @@ class OpenMoveTUI:
         self.startup_commands: deque[str] = deque()
         self.partial = ""
         self.last_command = "none"
-        self.notice = "External power state is your responsibility."
+        self.notice = "Set the manual origin and confirm the board before moving."
         self.command_pending = False
         self.pending_since = 0.0
         self.running = True
         self.jog_mm = 10
         self.controller_ready = False
+        self.homed = "?"
+        self.board_confirmed = "?"
+        self.side_to_move = "?"
+        self.ignore_repeated_keys_until = 0.0
+        self.prompt_history: dict[str, deque[str]] = {}
 
     def log(self, prefix: str, message: str) -> None:
         self.lines.append(f"{prefix} {message}")
+
+    def update_notice_from_response(self, line: str) -> None:
+        if line == "error:source-square-empty-in-internal-board-state":
+            self.notice = "Source is empty in firmware state. GOTO does not move or register pieces."
+        elif line.startswith("error:"):
+            self.notice = line.removeprefix("error:").replace("-", " ")
+        elif line.startswith("ok:goto-"):
+            self.notice = "Carriage positioned with magnet released; board state was not changed."
+        elif line.startswith("ok:human-black-move-recorded:"):
+            self.notice = "Human black move recorded; no carriage motion was performed."
+        elif line.startswith("ok:"):
+            self.notice = line.removeprefix("ok:").replace("-", " ")
 
     def send(self, command: str) -> None:
         if self.command_pending:
@@ -128,9 +153,21 @@ class OpenMoveTUI:
                 self.log("<", line)
                 if line.startswith("ready:"):
                     self.controller_ready = True
+                if line.startswith("status:"):
+                    fields = dict(
+                        field.split("=", 1)
+                        for field in line.removeprefix("status:").split(",")
+                        if "=" in field
+                    )
+                    self.homed = fields.get("homed", self.homed)
+                elif line.startswith("info:board_confirmed="):
+                    self.board_confirmed = line.rsplit("=", 1)[1]
+                elif line.startswith("info:side_to_move="):
+                    self.side_to_move = line.rsplit("=", 1)[1]
                 if line.startswith(("ok:", "error:")):
+                    self.update_notice_from_response(line)
                     self.command_pending = False
-                    curses.flushinp() # Discard accumulated key repeat after a movement.
+                    self.ignore_repeated_keys_until = time.monotonic() + 0.2
                     if line.startswith("error:"):
                         self.startup_commands.clear()
                     elif self.startup_commands:
@@ -153,21 +190,32 @@ class OpenMoveTUI:
 
         self.add(0, 0, "OpenMove Hardware Test TUI", title_style)
         self.add(1, 0, f"Port: {self.serial.path}   Last command: {self.last_command}")
-        self.add(2, 0, "SPACE = EMERGENCY STOP (drivers off, magnet released, position lost)", danger_style)
+        self.add(
+            2,
+            0,
+            f"Origin: {self.homed}   Board: {self.board_confirmed}   Turn: {self.side_to_move}",
+            title_style,
+        )
+        self.add(3, 0, "BACKSPACE = ABORT MOTION (drivers off, magnet released, position lost)", danger_style)
+
+        if height < 16:
+            self.add(5, 0, "Terminal too short. Resize to at least 16 rows; BACKSPACE still aborts.", danger_style)
+            self.screen.refresh()
+            return
 
         controls = [
-            f"Motion ({self.jog_mm} mm):   arrows = X/Y jog   c = toggle 1/10 mm",
+            f"Motion ({self.jog_mm} mm):   Shift+arrows = X/Y jog   c = toggle 1/10 mm",
             "Origin:          h = set a1 square centre as HOME",
             "Actuator:        0 = retract/release   9 = extend/engage",
             "Position:        g = move magnet to a square centre, e.g. e3",
-            "Chess:           m = enter move, e.g. e2e4",
-            "Controller:      s = status   r = reset internal board   d = disable motors",
+            "Chess:           m = enter coordinate or SAN move, e.g. e2e4 / Nxe5",
+            "Controller:      s = status   t = no-motion self-test   r = reset board   d = disable",
             "Application:     q = quit (does not change hardware state)",
         ]
-        for index, line in enumerate(controls, start=4):
+        for index, line in enumerate(controls, start=5):
             self.add(index, 0, line)
 
-        divider_row = 11
+        divider_row = 12
         self.add(divider_row, 0, "─" * max(1, width - 1))
         self.add(divider_row + 1, 0, f"Notice: {self.notice}", curses.A_BOLD)
         self.add(divider_row + 2, 0, "Serial log:", title_style)
@@ -182,6 +230,8 @@ class OpenMoveTUI:
     def prompt(self, label: str, maximum: int = 16) -> str | None:
         height, _ = self.screen.getmaxyx()
         entered = ""
+        history = self.prompt_history.setdefault(label, deque(maxlen=50))
+        history_index = len(history)
         try:
             while True:
                 self.poll_serial()
@@ -191,14 +241,27 @@ class OpenMoveTUI:
                 self.add(height - 1, 0, "> " + entered)
                 self.screen.refresh()
                 key = self.screen.getch()
-                if key in (ord(' '), ord('!')):
-                    self.handle_key(ord(' '))
+                if key in (curses.KEY_BACKSPACE, 127, 8):
+                    self.abort_motion()
                     return None
                 if key == 27:
                     return None
                 if key in (10, 13):
-                    return entered.strip()
-                if key in (curses.KEY_BACKSPACE, 127, 8):
+                    result = entered.strip()
+                    if result and (not history or history[-1] != result):
+                        history.append(result)
+                    return result
+                if key == curses.KEY_UP and history_index > 0:
+                    history_index -= 1
+                    entered = history[history_index]
+                elif key == curses.KEY_DOWN:
+                    if history_index < len(history) - 1:
+                        history_index += 1
+                        entered = history[history_index]
+                    elif history_index < len(history):
+                        history_index = len(history)
+                        entered = ""
+                elif key == curses.KEY_DC:
                     entered = entered[:-1]
                 elif 33 <= key <= 126 and len(entered) < maximum:
                     entered += chr(key)
@@ -218,13 +281,12 @@ class OpenMoveTUI:
             self.notice = "HOME cancelled. Type yes to confirm."
 
     def enter_move(self) -> None:
-        move = self.prompt("Coordinate move (example e2e4): ", 8)
+        move = self.prompt("Move (e2e4, Nf3, Nxe5; Delete edits): ", 10)
         if not move:
             self.notice = "Chess move cancelled."
             return
-        move = move.lower()
-        if not re.fullmatch(r"[a-h][1-8][a-h][1-8][qrbn]?", move):
-            self.notice = "Rejected locally: use e2e4 or e7e8q format."
+        if not valid_move_text(move):
+            self.notice = "Use coordinate notation (e2e4) or SAN (Nf3, Nxe5)."
             return
         self.send(move)
         self.notice = "Wait for ok/error before sending another command."
@@ -248,30 +310,40 @@ class OpenMoveTUI:
         else:
             self.notice = "Board-state reset cancelled."
 
-    def handle_key(self, key: int) -> None:
-        if key == ord(" "):
+    def abort_motion(self) -> None:
+        try:
             self.serial.emergency_stop()
-            self.command_pending = True
-            self.pending_since = time.monotonic()
-            self.last_command = "EMERGENCY STOP"
-            self.log(">", "! (emergency stop)")
-            self.notice = "EMERGENCY STOP SENT. Re-home before any movement."
+        except OSError as error:
+            self.log("!", f"Abort send failed: {error}")
+        self.command_pending = True
+        self.pending_since = time.monotonic()
+        self.last_command = "ABORT MOTION"
+        self.log(">", "! (software motion abort)")
+        self.notice = "ABORT SENT. Re-home and reconfirm the board before movement."
+
+    def handle_key(self, key: int) -> None:
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            self.abort_motion()
+            return
+        if time.monotonic() < self.ignore_repeated_keys_until:
+            return
+        if self.command_pending:
+            self.notice = "Wait for the controller reply; BACKSPACE still aborts motion."
             return
         if key in (ord("q"), ord("Q")):
             self.running = False
             return
-        if self.command_pending:
-            self.notice = "Wait for the controller reply; SPACE still triggers emergency stop."
-            return
 
-        if key == curses.KEY_RIGHT:
+        if key == getattr(curses, "KEY_SRIGHT", -1):
             self.send(f"jogx+{self.jog_mm}")
-        elif key == curses.KEY_LEFT:
+        elif key == getattr(curses, "KEY_SLEFT", -1):
             self.send(f"jogx-{self.jog_mm}")
-        elif key == curses.KEY_UP:
+        elif key == getattr(curses, "KEY_SR", -1):
             self.send(f"jogy+{self.jog_mm}")
-        elif key == curses.KEY_DOWN:
+        elif key == getattr(curses, "KEY_SF", -1):
             self.send(f"jogy-{self.jog_mm}")
+        elif key in (curses.KEY_RIGHT, curses.KEY_LEFT, curses.KEY_UP, curses.KEY_DOWN):
+            self.notice = "Hold Shift with an arrow key for manual jogging."
         elif key in (ord("c"), ord("C")):
             self.jog_mm = 10 if self.jog_mm == 1 else 1
             self.notice = f"Jog distance set to {self.jog_mm} mm."
@@ -287,6 +359,9 @@ class OpenMoveTUI:
             self.goto_square()
         elif key in (ord("s"), ord("S")):
             self.send("status")
+        elif key in (ord("t"), ord("T")):
+            self.send("selftest")
+            self.notice = "Running firmware parser/geometry checks; hardware will not move."
         elif key in (ord("r"), ord("R")):
             self.confirm_board_reset()
         elif key in (ord("d"), ord("D")):
@@ -318,7 +393,7 @@ class OpenMoveTUI:
         while self.running:
             self.poll_serial()
             if self.command_pending and time.monotonic() - self.pending_since > 5.0:
-                self.notice = "Awaiting completion. Controls stay locked; SPACE sends stop."
+                self.notice = "Awaiting completion. Controls stay locked; BACKSPACE aborts."
             self.draw()
             key = self.screen.getch()
             if key != -1:

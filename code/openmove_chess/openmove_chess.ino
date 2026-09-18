@@ -25,9 +25,8 @@ const bool INVERT_A_DIR = true;
 const bool INVERT_B_DIR = true;
 const bool SWAP_X_Y = false;
 
-// Experimental capture drop: board edge immediately outside h5.
-// The user has not yet physically verified that a released piece falls here.
-const float GRAVEYARD_X_MM = MAX_X_MM;
+// Capture drop: centre of the half-cell playable area immediately right of h5.
+const float GRAVEYARD_X_MM = 7.0f * SQUARE_SIZE_MM + HALF_SQUARE_MM;
 const float GRAVEYARD_Y_MM = 4.0f * SQUARE_SIZE_MM;
 const float GRAVEYARD_APPROACH_Y_MM = GRAVEYARD_Y_MM + HALF_SQUARE_MM;
 
@@ -48,6 +47,8 @@ const float START_STEP_RATE = 80.0f;
 const float MAX_STEP_RATE = 2500.0f;
 const float STEP_ACCELERATION = 6000.0f;
 const unsigned int STEP_HIGH_US = 10;
+// Mid-square lanes are not safe until measured against the largest piece base.
+const bool KNIGHT_LANE_ROUTE_VALIDATED = false;
 
 Servo magnetActuator;
 
@@ -198,7 +199,7 @@ bool moveMotors(long targetA, long targetB) {
     delayMicroseconds(STEP_HIGH_US);
     if (stepA) digitalWrite(A_STEP_PIN, LOW);
     if (stepB) digitalWrite(B_STEP_PIN, LOW);
-    waitMicros(period - STEP_HIGH_US);
+    waitMicros(period > STEP_HIGH_US ? period - STEP_HIGH_US : 1UL);
 
     if (stepA) motorAPosition += deltaA >= 0 ? 1 : -1;
     if (stepB) motorBPosition += deltaB >= 0 ? 1 : -1;
@@ -425,43 +426,175 @@ bool parseSquare(const char *text, uint8_t &file, uint8_t &rank) {
   return true;
 }
 
+char lowerAscii(char value) {
+  return value >= 'A' && value <= 'Z' ? value + ('a' - 'A') : value;
+}
+
+bool normalizeMoveNotation(const char *notation, char *coordinateMove) {
+  size_t length = strlen(notation);
+  if (length == 4 || length == 5) {
+    coordinateMove[0] = lowerAscii(notation[0]);
+    coordinateMove[1] = notation[1];
+    coordinateMove[2] = lowerAscii(notation[2]);
+    coordinateMove[3] = notation[3];
+    coordinateMove[4] = length == 5 ? lowerAscii(notation[4]) : 0;
+    coordinateMove[5] = 0;
+    uint8_t ignoredFile, ignoredRank;
+    if (parseSquare(coordinateMove, ignoredFile, ignoredRank) &&
+        parseSquare(coordinateMove + 2, ignoredFile, ignoredRank)) return true;
+  }
+
+  if (length && (notation[length - 1] == '+' || notation[length - 1] == '#')) return false;
+  char promotion = 0;
+  if (length >= 2 && notation[length - 2] == '=') {
+    promotion = lowerAscii(notation[length - 1]);
+    length -= 2;
+  }
+  if (length < 2) return false;
+
+  char destinationText[3] = {lowerAscii(notation[length - 2]), notation[length - 1], 0};
+  uint8_t destinationFile, destinationRank;
+  if (!parseSquare(destinationText, destinationFile, destinationRank)) return false;
+
+  char requestedType = 'P';
+  size_t index = 0;
+  if (notation[0] == 'K' || notation[0] == 'Q' || notation[0] == 'R' ||
+      notation[0] == 'B' || notation[0] == 'N') {
+    requestedType = notation[0];
+    index = 1;
+  }
+  size_t qualifierStart = index;
+
+  int requestedFile = -1;
+  int requestedRank = -1;
+  bool captureMarked = false;
+  for (; index < length - 2; index++) {
+    char symbol = notation[index];
+    if (symbol == 'x' || symbol == 'X') captureMarked = true;
+    else if (symbol >= 'a' && symbol <= 'h' && requestedFile < 0) requestedFile = symbol - 'a';
+    else if (symbol >= '1' && symbol <= '8' && requestedRank < 0) requestedRank = symbol - '1';
+    else return false;
+  }
+
+  size_t qualifierLength = length - 2 - qualifierStart;
+  if (requestedType == 'P') {
+    if (captureMarked) {
+      if (qualifierLength != 2 || requestedFile < 0 || requestedRank >= 0) return false;
+    } else if (qualifierLength != 0 || requestedFile >= 0 || requestedRank >= 0) {
+      return false;
+    }
+  }
+
+  bool destinationOccupied = board[destinationFile][destinationRank] != 0;
+  if (captureMarked != destinationOccupied) return false;
+
+  char boardPiece = whiteToMove ? requestedType : lowerAscii(requestedType);
+  uint8_t sourceFile = 0;
+  uint8_t sourceRank = 0;
+  uint8_t candidates = 0;
+  for (uint8_t file = 0; file < 8; file++) {
+    for (uint8_t rank = 0; rank < 8; rank++) {
+      if (board[file][rank] != boardPiece ||
+          (requestedFile >= 0 && requestedFile != file) ||
+          (requestedRank >= 0 && requestedRank != rank)) continue;
+      if (pieceMoveIsValid(boardPiece, file, rank, destinationFile, destinationRank) &&
+          !moveLeavesKingInCheck(boardPiece, file, rank, destinationFile, destinationRank)) {
+        sourceFile = file;
+        sourceRank = rank;
+        candidates++;
+      }
+    }
+  }
+  if (candidates != 1) return false;
+
+  coordinateMove[0] = 'a' + sourceFile;
+  coordinateMove[1] = '1' + sourceRank;
+  coordinateMove[2] = 'a' + destinationFile;
+  coordinateMove[3] = '1' + destinationRank;
+  coordinateMove[4] = promotion;
+  coordinateMove[5] = 0;
+  return true;
+}
+
+void runSelfTest() {
+  char savedBoard[8][8];
+  memcpy(savedBoard, board, sizeof(board));
+  bool savedWhiteToMove = whiteToMove;
+  resetBoardState();
+
+  char coordinateMove[6];
+  bool passed = normalizeMoveNotation("e4", coordinateMove) &&
+                !strcmp(coordinateMove, "e2e4") &&
+                normalizeMoveNotation("Nf3", coordinateMove) &&
+                !strcmp(coordinateMove, "g1f3") &&
+                !normalizeMoveNotation("Nxe5", coordinateMove) &&
+                !normalizeMoveNotation("xd5", coordinateMove) &&
+                !normalizeMoveNotation("ed5", coordinateMove) &&
+                !normalizeMoveNotation("e4+", coordinateMove) &&
+                fabs(GRAVEYARD_X_MM - 328.125f) < 0.01f &&
+                fabs(GRAVEYARD_Y_MM - 175.0f) < 0.01f;
+
+  memcpy(board, savedBoard, sizeof(board));
+  whiteToMove = savedWhiteToMove;
+  Serial.println(passed ? F("ok:selftest-passed; no-motion") : F("error:selftest-failed; no-motion"));
+}
+
+void rejectChessMove(const __FlashStringHelper *message) {
+  Serial.println(message);
+  if (!whiteToMove && boardTrusted) {
+    boardTrusted = false;
+    Serial.println(F("warning:rejected-black-entry; physical-board-state-untrusted"));
+  }
+}
+
 void executeChessMove(const char *moveText) {
   if (!boardTrusted) {
-    Serial.println(F("error:confirm-standard-physical-board-with-RESETBOARD"));
+    rejectChessMove(F("error:confirm-standard-physical-board-with-RESETBOARD"));
     return;
   }
   if (!manuallyHomed) {
-    Serial.println(F("error:not-homed; place carriage at a1 centre and send HOME"));
+    rejectChessMove(F("error:not-homed; place carriage at a1 centre and send HOME"));
     return;
   }
 
+  char coordinateMove[6];
+  if (!normalizeMoveNotation(moveText, coordinateMove)) {
+    rejectChessMove(F("error:invalid-or-ambiguous-move; use e2e4, Nf3, or Nxe5"));
+    return;
+  }
+  moveText = coordinateMove;
+
   size_t length = strlen(moveText);
   if (length != 4 && length != 5) {
-    Serial.println(F("error:use coordinate move such as e2e4 or e7e8q"));
+    rejectChessMove(F("error:use coordinate move such as e2e4 or e7e8q"));
     return;
   }
 
   uint8_t sourceFile, sourceRank, destinationFile, destinationRank;
   if (!parseSquare(moveText, sourceFile, sourceRank) ||
       !parseSquare(moveText + 2, destinationFile, destinationRank)) {
-    Serial.println(F("error:invalid-square"));
+    rejectChessMove(F("error:invalid-square"));
     return;
   }
 
   char movingPiece = board[sourceFile][sourceRank];
   char destinationPiece = board[destinationFile][destinationRank];
   if (!movingPiece) {
-    Serial.println(F("error:source-square-empty-in-internal-board-state"));
+    rejectChessMove(F("error:source-square-empty-in-internal-board-state"));
     return;
   }
   if (destinationPiece &&
       ((isWhite(movingPiece) && isWhite(destinationPiece)) ||
        (isBlack(movingPiece) && isBlack(destinationPiece)))) {
-    Serial.println(F("error:destination-has-same-colour-piece"));
+    rejectChessMove(F("error:destination-has-same-colour-piece"));
     return;
   }
   if (isWhite(movingPiece) != whiteToMove) {
-    Serial.println(F("error:wrong-side-to-move"));
+    rejectChessMove(F("error:wrong-side-to-move"));
+    return;
+  }
+  if (destinationPiece == 'K' || destinationPiece == 'k') {
+    rejectChessMove(F("error:capturing-a-king-is-not-a-legal-chess-move"));
     return;
   }
 
@@ -469,7 +602,7 @@ void executeChessMove(const char *moveText) {
   bool lastRank = (movingPiece == 'P' && destinationRank == 7) ||
                   (movingPiece == 'p' && destinationRank == 0);
   if (lastRank != (length == 5)) {
-    Serial.println(F("error:promotion-suffix-required-only-on-final-rank"));
+    rejectChessMove(F("error:promotion-suffix-required-only-on-final-rank"));
     return;
   }
   if (length == 5) {
@@ -477,9 +610,11 @@ void executeChessMove(const char *moveText) {
     if (promotion >= 'A' && promotion <= 'Z') promotion += 'a' - 'A';
     if ((movingPiece != 'P' && movingPiece != 'p') ||
         (promotion != 'q' && promotion != 'r' && promotion != 'b' && promotion != 'n')) {
-      Serial.println(F("error:invalid-promotion"));
+      rejectChessMove(F("error:invalid-promotion"));
       return;
     }
+    rejectChessMove(F("error:promotion-not-validated; replace-piece-and-state-manually"));
+    return;
   }
 
   // En passant: diagonal pawn move to an empty destination.
@@ -488,31 +623,47 @@ void executeChessMove(const char *moveText) {
 
   // These special actions need history/physical confirmation. Reject before motion.
   if (enPassant) {
-    Serial.println(F("error:en-passant-not-validated"));
-    return;
-  }
-  if (destinationPiece) {
-    Serial.println(F("error:capture-drop-outside-h5-not-physically-validated"));
+    rejectChessMove(F("error:en-passant-not-validated"));
     return;
   }
   if ((movingPiece == 'K' || movingPiece == 'k') &&
       abs((int)destinationFile - (int)sourceFile) == 2) {
-    Serial.println(F("error:castling-not-validated"));
+    rejectChessMove(F("error:castling-not-validated"));
     return;
   }
   if (!pieceMoveIsValid(movingPiece, sourceFile, sourceRank,
                         destinationFile, destinationRank)) {
-    Serial.println(F("error:illegal-piece-movement-or-blocked-path"));
+    rejectChessMove(F("error:illegal-piece-movement-or-blocked-path"));
     return;
   }
   if (moveLeavesKingInCheck(movingPiece, sourceFile, sourceRank,
                             destinationFile, destinationRank)) {
-    Serial.println(F("error:move-leaves-king-in-check"));
+    rejectChessMove(F("error:move-leaves-king-in-check"));
+    return;
+  }
+  if (movingPiece == 'N' && !KNIGHT_LANE_ROUTE_VALIDATED) {
+    rejectChessMove(F("error:knight-lane-clearance-not-physically-validated"));
     return;
   }
 
   Serial.print(F("busy:"));
   Serial.println(moveText);
+
+  if (isBlack(movingPiece)) {
+    board[sourceFile][sourceRank] = 0;
+    board[destinationFile][destinationRank] = movingPiece;
+    whiteToMove = true;
+    Serial.print(F("ok:human-black-move-recorded:"));
+    Serial.println(moveText);
+    return;
+  }
+
+  if (destinationPiece && !removePieceToGraveyard(destinationFile, destinationRank)) {
+    boardTrusted = false;
+    if (motionAborted) return;
+    Serial.println(F("error:captured-piece-removal-failed; physical-state-uncertain"));
+    return;
+  }
 
   if (!mechanicallyMovePiece(sourceFile, sourceRank, destinationFile, destinationRank)) {
     boardTrusted = false;
@@ -524,12 +675,6 @@ void executeChessMove(const char *moveText) {
   board[sourceFile][sourceRank] = 0;
   board[destinationFile][destinationRank] = movingPiece;
   whiteToMove = !whiteToMove;
-
-  if (promotion) {
-    board[destinationFile][destinationRank] = isWhite(movingPiece) ? promotion - ('a' - 'A') : promotion;
-    Serial.println(F("warning:promotion-requires-manual-physical-piece-replacement"));
-    boardTrusted = false;
-  }
 
   Serial.print(F("ok:"));
   Serial.println(moveText);
@@ -574,6 +719,7 @@ void printStatus() {
   Serial.println(boardTrusted ? 1 : 0);
   Serial.print(F("info:side_to_move="));
   Serial.println(whiteToMove ? F("white") : F("black"));
+  Serial.println(F("info:motion_side=white; black_moves_are_human-recorded"));
   Serial.print(F("info:actuator_release_us="));
   Serial.print(ACTUATOR_RETRACT_US);
   Serial.print(F(",actuator_engage_us="));
@@ -590,15 +736,21 @@ void printStatus() {
   Serial.println(SWAP_X_Y ? 1 : 0);
   Serial.print(F("info:emergency_stop_latched="));
   Serial.println(emergencyStopLatched ? 1 : 0);
+  Serial.print(F("info:knight_lane_route_validated="));
+  Serial.println(KNIGHT_LANE_ROUTE_VALIDATED ? 1 : 0);
   Serial.println(F("ok:status"));
 }
 
 void processCommand(char *command) {
+  char originalCommand[sizeof(inputLine)];
+  strncpy(originalCommand, command, sizeof(originalCommand));
+  originalCommand[sizeof(originalCommand) - 1] = 0;
   for (char *p = command; *p; p++) {
     if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
   }
 
-  if (emergencyStopLatched && strcmp(command, "home") && strcmp(command, "status")) {
+  if (emergencyStopLatched && strcmp(command, "home") && strcmp(command, "status") &&
+      strcmp(command, "selftest")) {
     Serial.println(F("error:emergency-stop-latched; place carriage at a1 centre and send HOME"));
     return;
   }
@@ -617,6 +769,8 @@ void processCommand(char *command) {
     Serial.println(F("ok:manual-home-set-at-a1-centre; motors-enabled"));
   } else if (!strcmp(command, "status")) {
     printStatus();
+  } else if (!strcmp(command, "selftest")) {
+    runSelfTest();
   } else if (!strcmp(command, "actuator_retract") || !strcmp(command, "magnet0")) {
     releaseMagnet();
     if (motionAborted) return;
@@ -656,7 +810,7 @@ void processCommand(char *command) {
     if (motionAborted) return;
     Serial.println(F("ok:motors-disabled; position-lost; run HOME before moves"));
   } else {
-    executeChessMove(command);
+    executeChessMove(originalCommand);
   }
 }
 
@@ -678,7 +832,8 @@ void setup() {
   settleActuator();
   resetBoardState();
 
-  Serial.println(F("OpenMove chess motion controller 0.7"));
+  Serial.println(F("OpenMove chess motion controller 1.0"));
+  Serial.println(F("mode:white pieces automated; move black physically, then enter its move"));
   Serial.println(F("ready:place carriage at a1 centre, then send HOME"));
 }
 
