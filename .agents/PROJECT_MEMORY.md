@@ -61,6 +61,30 @@ Early prototype — mechanical development. The immediate objective is to build 
   compiled for Arduino Uno and was uploaded to `/dev/ttyUSB0`. A post-upload
   serial check reported `OpenMove chess motion controller 1.2`, white-only
   automation, and the manual a1-home prompt. No physical motion test was run.
+- After the user reported that a false home near h1 made motion appear usable
+  while piece colours were reversed, firmware 2.4/protocol 5 made the intended
+  mapping explicit: real a1 is `(0, 0)`, positive X is a-to-h, positive Y is
+  rank 1-to-8, and white occupies ranks 1-2. The GUI now refuses chess motion
+  unless all mapping fields match. Firmware and Python checks pass. Upload was
+  blocked because the running GUI held `/dev/ttyUSB0`; physical validation at
+  the real a1 remains pending.
+- The laptop display is 1366x768 at scale 1 under Niri; the GUI is tiled at
+  approximately 800x628. The fixed 1180x760 startup size was too tall. The GUI
+  now sizes from available screen geometry, uses tighter spacing, preserves up
+  to 2000 log lines, and shows a larger usable scrolling log area. Firmware
+  2.4/protocol 5 was then uploaded successfully and its non-motion status output
+  confirmed the a1/a-to-h/1-to-8/white-ranks-1-2 contract. Physical motion is
+  still unvalidated.
+- The user confirmed physical a1 is the bottom-left black square from White's
+  viewpoint, White is displayed at the bottom, adjacent square centres are
+  44 mm apart, Y+ physically moves a1-to-a2, and the prior X+ moved b1-to-a1.
+  They explicitly approved reusing the experimental H-bot transform and
+  40 steps/mm calibration. Firmware 2.5/protocol 6 therefore reverses logical X
+  only and uses a 44 mm pitch. It compiled, uploaded to `/dev/ttyUSB0`, and a
+  no-motion status query confirmed protocol 6, `square_mm=44.00`, and
+  `reverse_logical_x=1`. The user then physically confirmed the corrected X+
+  jog works as intended. Small positive X and Y direction tests now match the
+  a1-to-b1 and a1-to-a2 conventions; full-square accuracy remains unvalidated.
 
 ## Unknown or unvalidated
 

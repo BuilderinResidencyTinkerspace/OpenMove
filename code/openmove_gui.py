@@ -37,6 +37,15 @@ PIECES = {
     "k": "♚", "q": "♛", "r": "♜", "b": "♝", "n": "♞", "p": "♟",
 }
 
+EXPECTED_MAPPING = {
+    "protocol": "6",
+    "home_square": "a1",
+    "x_axis": "a-to-h",
+    "y_axis": "1-to-8",
+    "white_ranks": "1-2",
+    "x_motor_direction": "reverse",
+}
+
 
 def parse_white_move(board: chess.Board, text: str) -> chess.Move:
     board.turn = chess.WHITE
@@ -320,11 +329,10 @@ class OpenMoveWindow(QMainWindow):
     def __init__(self, default_port: str) -> None:
         super().__init__()
         self.setWindowTitle("OpenMove Controller")
-        self.resize(1180, 760)
         self.board = chess.Board()
         self.serial = SerialController()
         self.pending_success: Callable[[], None] | None = None
-        self.logs: deque[str] = deque(maxlen=180)
+        self.logs: deque[str] = deque(maxlen=2000)
         self.jog_mm = 10
         self._build_ui(default_port)
         self._connect_signals()
@@ -336,7 +344,7 @@ class OpenMoveWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setContentsMargins(20, 20, 20, 20)
+        root.setContentsMargins(12, 12, 12, 12)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(splitter)
         self.board_widget = ChessBoardWidget()
@@ -346,7 +354,7 @@ class OpenMoveWindow(QMainWindow):
         panel.setMinimumWidth(320)
         panel.setMaximumWidth(420)
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setSpacing(14)
+        panel_layout.setSpacing(8)
         title = QLabel("OpenMove")
         title.setObjectName("title")
         panel_layout.addWidget(title)
@@ -407,10 +415,13 @@ class OpenMoveWindow(QMainWindow):
         panel_layout.addWidget(self.notice)
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(180)
+        self.log_view.setMinimumHeight(110)
+        self.log_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         panel_layout.addWidget(self.log_view, 1)
         splitter.addWidget(panel)
         splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([760, 380])
 
         abort_action = QAction("Abort Motion", self)
         abort_action.setShortcut(QKeySequence(Qt.Key.Key_Backspace))
@@ -423,7 +434,7 @@ class OpenMoveWindow(QMainWindow):
             QLabel#connection { color: #59645c; font-weight: bold; }
             QLabel#notice { background: #e5e9df; border-left: 4px solid #2f704f; padding: 10px; }
             QLineEdit { background: #fffef8; border: 1px solid #a9b0a5; border-radius: 4px; padding: 8px; min-height: 24px; }
-            QPushButton { background: #f8f8f2; border: 1px solid #637067; border-radius: 4px; padding: 9px; font-weight: bold; }
+            QPushButton { background: #f8f8f2; border: 1px solid #637067; border-radius: 4px; padding: 6px; font-weight: bold; }
             QPushButton:hover { background: white; }
             QPushButton:disabled { color: #8b918c; border-color: #b8bdb9; }
             QPushButton#primary { background: #2f704f; color: white; border-color: #2f704f; }
@@ -499,11 +510,17 @@ class OpenMoveWindow(QMainWindow):
 
     def _status_changed(self, status: dict[str, str]) -> None:
         self.home_status.setText("Set" if status.get("homed") == "1" else "No")
-        self.board_status.setText("Ready" if status.get("board_confirmed") == "1" else "No")
+        mapping_seen = all(key in status for key in EXPECTED_MAPPING)
+        mapping_ok = mapping_seen and all(status.get(key) == value for key, value in EXPECTED_MAPPING.items())
+        if mapping_seen and not mapping_ok:
+            self.board_status.setText("Mapping mismatch")
+        else:
+            self.board_status.setText("Ready" if status.get("board_confirmed") == "1" else "No")
         self._update_move_enabled()
 
     def _update_move_enabled(self) -> None:
-        ready = self.serial.connected and not self.serial.pending_command and self.serial.status.get("homed") == "1" and self.serial.status.get("board_confirmed") == "1"
+        mapping_ok = all(self.serial.status.get(key) == value for key, value in EXPECTED_MAPPING.items())
+        ready = self.serial.connected and not self.serial.pending_command and mapping_ok and self.serial.status.get("homed") == "1" and self.serial.status.get("board_confirmed") == "1"
         self.move_button.setEnabled(ready)
         self.move_input.setEnabled(ready)
 
@@ -696,6 +713,9 @@ def main() -> int:
     app = QApplication([])
     app.setApplicationName("OpenMove")
     window = OpenMoveWindow(args.port)
+    available = app.primaryScreen().availableGeometry()
+    window.resize(min(1180, int(available.width() * 0.94)),
+                  min(700, int(available.height() * 0.90)))
     window.show()
     return app.exec()
 

@@ -2,6 +2,12 @@
 #include <math.h>
 #include <string.h>
 
+// Coordinate contract shared with every host controller. Do not change one
+// field independently: a1 is the only manual home, white starts on ranks 1-2,
+// +X advances files a->h, and +Y advances ranks 1->8.
+const uint8_t PROTOCOL_VERSION = 6;
+const char FIRMWARE_VERSION[] = "2.5";
+
 // Confirmed CNC Shield V3 wiring.
 const uint8_t A_STEP_PIN = 2;
 const uint8_t B_STEP_PIN = 3;
@@ -13,17 +19,20 @@ const uint8_t ACTUATOR_PIN = 11;  // CNC Shield Z+ header; PWM signal only.
 // Confirmed mechanics: 1.8 degree motors, GT2 belt, 20-tooth pulley,
 // and DRV8825 drivers configured for 1/8 microstepping.
 const float MOTOR_STEPS_PER_MM = 40.0f;
-const float PLAYABLE_SIZE_MM = 350.0f;
-const float SQUARE_SIZE_MM = PLAYABLE_SIZE_MM / 8.0f;
+const float SQUARE_SIZE_MM = 44.0f; // User-measured adjacent square centres.
+const float PLAYABLE_SIZE_MM = SQUARE_SIZE_MM * 8.0f;
 const float HALF_SQUARE_MM = SQUARE_SIZE_MM / 2.0f;
-// a1 is (0, 0), h8 is (306.25, 306.25), and the positive playable edges are
-// at (328.125, 328.125). Remaining travel is reserved for edge operations.
+// a1 is (0, 0), h8 is (308, 308), and the positive playable edges are at
+// (330, 330). Remaining travel is reserved for edge operations.
 const float MAX_X_MM = PLAYABLE_SIZE_MM;
 const float MAX_Y_MM = PLAYABLE_SIZE_MM;
 // Change only after measuring the physical jog directions.
 const bool INVERT_A_DIR = true;
 const bool INVERT_B_DIR = true;
 const bool SWAP_X_Y = false;
+// Physical test: the previous logical X+ moved b1->a1. Reverse X so logical
+// X+ moves a1->b1. Y is not reversed: Y+ already moved a1->a2.
+const bool REVERSE_LOGICAL_X = true;
 
 // MG90S with a custom 3D-printed linear mechanism. These are pulse widths.
 // User confirmed surface contact at 2100 us on 2026-09-17; 1000 us was clear
@@ -227,8 +236,9 @@ bool moveTo(float x, float y) {
   }
 
   // Selected H-bot mapping. Both physical directions and scale need measurement.
-  float mappedX = SWAP_X_Y ? y : x;
-  float mappedY = SWAP_X_Y ? x : y;
+  float logicalX = REVERSE_LOGICAL_X ? -x : x;
+  float mappedX = SWAP_X_Y ? y : logicalX;
+  float mappedY = SWAP_X_Y ? logicalX : y;
   long targetA = lroundf((mappedX + mappedY) * MOTOR_STEPS_PER_MM);
   long targetB = lroundf((mappedY - mappedX) * MOTOR_STEPS_PER_MM);
   if (!moveMotors(targetA, targetB)) return false;
@@ -939,6 +949,9 @@ void printStatus() {
   Serial.println(STEP_ACCELERATION, 1);
   Serial.print(F("info:board_confirmed="));
   Serial.println(boardTrusted ? 1 : 0);
+  Serial.print(F("info:protocol="));
+  Serial.print(PROTOCOL_VERSION);
+  Serial.println(F(",home_square=a1,x_axis=a-to-h,y_axis=1-to-8,white_ranks=1-2,x_motor_direction=reverse"));
   Serial.println(F("info:side_to_move=white"));
   Serial.println(F("info:motion_side=white; black_moves_disabled"));
   Serial.print(F("info:actuator_release_us="));
@@ -954,7 +967,9 @@ void printStatus() {
   Serial.print(F(",invert_b="));
   Serial.print(INVERT_B_DIR ? 1 : 0);
   Serial.print(F(",swap_xy="));
-  Serial.println(SWAP_X_Y ? 1 : 0);
+  Serial.print(SWAP_X_Y ? 1 : 0);
+  Serial.print(F(",reverse_logical_x="));
+  Serial.println(REVERSE_LOGICAL_X ? 1 : 0);
   Serial.print(F("info:emergency_stop_latched="));
   Serial.println(emergencyStopLatched ? 1 : 0);
   Serial.println(F("info:knight_planner=temporary-blocker-relocation"));
@@ -1052,7 +1067,9 @@ void setup() {
   settleActuator();
   resetBoardState();
 
-  Serial.println(F("OpenMove chess motion controller 1.2"));
+  Serial.print(F("OpenMove chess motion controller "));
+  Serial.println(FIRMWARE_VERSION);
+  Serial.println(F("mapping:home=a1,+x=a-to-h,+y=1-to-8,white=ranks-1-2"));
   Serial.println(F("mode:white-only automation; black moves disabled"));
   Serial.println(F("ready:place carriage at a1 centre, then send HOME"));
 }

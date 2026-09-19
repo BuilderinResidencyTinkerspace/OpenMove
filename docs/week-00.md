@@ -99,3 +99,32 @@ compiled for Arduino Uno and uploaded to `/dev/ttyUSB0`. The upload completed
 successfully, and a non-motion serial check showed the startup banner
 `OpenMove chess motion controller 1.2`, white-only automation mode, and the
 manual a1-home prompt. No physical movement was commanded or validated.
+
+The next mapping revision removes the false-origin workaround. Firmware
+2.4/protocol 5 explicitly defines real `a1` as `(0, 0)`, positive X from a-file
+to h-file, positive Y from rank 1 to rank 8, and white pieces on ranks 1-2. The
+GUI checks all five mapping fields and keeps chess movement disabled if the
+connected firmware disagrees. The Uno build and Python syntax checks passed.
+Upload was blocked because the running GUI held `/dev/ttyUSB0`; physical
+validation from the real a1 is still pending.
+
+The laptop display was measured as 1366x768 at 100% scale under Niri, where the
+GUI receives an approximately 800x628 tile. Its old fixed 1180x760 startup size
+was too tall. The layout now uses available screen geometry, tighter controls,
+a visible scrolling log pane, and a 2000-line log history. Firmware 2.4/protocol
+5 was then uploaded successfully. A non-motion status query confirmed
+`home_square=a1`, `x_axis=a-to-h`, `y_axis=1-to-8`, and `white_ranks=1-2`.
+Physical motion from the real a1 remains untested.
+
+The coordinate mapping was then rebuilt from new physical observations. From
+White's viewpoint, a1 is the bottom-left black square; Y+ moves from a1 toward
+a2, while the previous X+ moved in the wrong direction from b1 toward a1. The
+measured adjacent-square centre spacing is 44 mm. With explicit user approval,
+the experimental H-bot transform and 40 steps/mm calibration were retained.
+Firmware 2.5/protocol 6 reverses logical X only and uses the 44 mm pitch. It
+compiled and uploaded successfully, and a non-motion status query confirmed
+protocol 6, `square_mm=44.00`, and `reverse_logical_x=1`. Physical regression
+testing remained pending. The user subsequently confirmed that the corrected
+positive-X jog works as intended. Small positive X and Y direction tests now
+match a1-to-b1 and a1-to-a2; full-square positioning accuracy is still
+unvalidated.
