@@ -1,5 +1,9 @@
 # Week 4 — Putting Stockfish on a VM Because it sounds cool
 
+<img width="1366" height="681" alt="image" src="https://github.com/user-attachments/assets/5e744349-0840-463c-98d1-a58d722c2f25" />
+
+<img width="1366" height="681" alt="image" src="https://github.com/user-attachments/assets/03d60c08-0637-4418-8422-b5c6d6216cf3" />
+
 **Goal this week:** Set up Stockfish on an Azure VM so OpenMove could eventually ask a chess engine for moves.
 
 The mechanical side of OpenMove was slowly becoming real: motors, drivers, a servo, and a printed magnet mechanism.
