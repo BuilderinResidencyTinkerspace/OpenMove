@@ -41,6 +41,26 @@ Early prototype — mechanical development. The immediate objective is to build 
   current-sense resistor markings are not identified, so the resulting limits
   remain unknown. If a carrier is R100, 0.65 V corresponds to about 1.3 A/phase;
   this must not be assumed for clone carriers.
+- On 2026-09-19 the origin was initially labelled h1, but physical GOTO tests
+  proved that label wrong: `GOTO g1` reached g8 and `GOTO h2` reached h7. Files
+  were correct and ranks were exactly mirrored, proving the actual zero location
+  is h8. Experimental firmware 2.2 therefore uses h8 as `(0, 0)`, with local X
+  increasing toward a-file and local Y increasing toward rank 1. It also bumps
+  the serial protocol to version 3 so the GUI rejects the incompatible h1 build.
+  Firmware 2.2 compiled, was uploaded to `/dev/ttyUSB0`, reported protocol 3 and
+  the h8 coordinate convention, and passed its no-motion self-test. Physical
+  motion regression testing remains pending.
+- A subsequent protocol-3 test disproved the h8 conclusion: with both axes
+  mirrored, `GOTO e2` reached d7 and `GOTO h8` returned to physical a1. This is
+  an exact 180-degree transform, establishing a1 as the actual machine origin.
+  Firmware 2.3/protocol 4 restores direct file/rank coordinates from a1. It has
+  compiled, was uploaded to `/dev/ttyUSB0`, reported the direct a1 coordinate
+  convention, and passed its no-motion self-test. Physical regression testing
+  remains pending.
+- On 2026-09-19 the current working-tree `code/openmove_chess/openmove_chess.ino`
+  compiled for Arduino Uno and was uploaded to `/dev/ttyUSB0`. A post-upload
+  serial check reported `OpenMove chess motion controller 1.2`, white-only
+  automation, and the manual a1-home prompt. No physical motion test was run.
 
 ## Unknown or unvalidated
 

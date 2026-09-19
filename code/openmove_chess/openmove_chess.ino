@@ -13,22 +13,17 @@ const uint8_t ACTUATOR_PIN = 11;  // CNC Shield Z+ header; PWM signal only.
 // Confirmed mechanics: 1.8 degree motors, GT2 belt, 20-tooth pulley,
 // and DRV8825 drivers configured for 1/8 microstepping.
 const float MOTOR_STEPS_PER_MM = 40.0f;
-const float BOARD_SIZE_MM = 350.0f;
-const float SQUARE_SIZE_MM = BOARD_SIZE_MM / 8.0f;
+const float PLAYABLE_SIZE_MM = 350.0f;
+const float SQUARE_SIZE_MM = PLAYABLE_SIZE_MM / 8.0f;
 const float HALF_SQUARE_MM = SQUARE_SIZE_MM / 2.0f;
-// a1 is (0, 0). The 8×8 grid ends at the h8 centre (306.25 mm); the measured
-// 350 mm playing area includes the final half-square beyond that centre.
-const float MAX_X_MM = BOARD_SIZE_MM;
-const float MAX_Y_MM = BOARD_SIZE_MM;
+// a1 is (0, 0), h8 is (306.25, 306.25), and the positive playable edges are
+// at (328.125, 328.125). Remaining travel is reserved for edge operations.
+const float MAX_X_MM = PLAYABLE_SIZE_MM;
+const float MAX_Y_MM = PLAYABLE_SIZE_MM;
 // Change only after measuring the physical jog directions.
 const bool INVERT_A_DIR = true;
 const bool INVERT_B_DIR = true;
 const bool SWAP_X_Y = false;
-
-// Capture drop: centre of the half-cell playable area immediately right of h5.
-const float GRAVEYARD_X_MM = 7.0f * SQUARE_SIZE_MM + HALF_SQUARE_MM;
-const float GRAVEYARD_Y_MM = 4.0f * SQUARE_SIZE_MM;
-const float GRAVEYARD_APPROACH_Y_MM = GRAVEYARD_Y_MM + HALF_SQUARE_MM;
 
 // MG90S with a custom 3D-printed linear mechanism. These are pulse widths.
 // User confirmed surface contact at 2100 us on 2026-09-17; 1000 us was clear
@@ -47,8 +42,6 @@ const float START_STEP_RATE = 80.0f;
 const float MAX_STEP_RATE = 2500.0f;
 const float STEP_ACCELERATION = 6000.0f;
 const unsigned int STEP_HIGH_US = 10;
-// Mid-square lanes are not safe until measured against the largest piece base.
-const bool KNIGHT_LANE_ROUTE_VALIDATED = false;
 
 Servo magnetActuator;
 
@@ -69,6 +62,26 @@ uint8_t inputLength = 0;
 bool discardLine = false;
 bool boardTrusted = false;
 bool whiteToMove = true;
+
+struct RelocationPlan {
+  char piece;
+  uint8_t source;
+  uint8_t parking;
+  uint8_t pathLength;
+  uint8_t path[64];
+};
+
+struct KnightPlan {
+  bool valid;
+  uint8_t route[3];
+  uint8_t relocationCount;
+  uint16_t loadedSteps;
+  RelocationPlan relocations[2];
+};
+
+KnightPlan knightPlan;
+int8_t plannerParent[64];
+uint8_t plannerQueue[64];
 
 void stopController() {
   digitalWrite(ENABLE_PIN, HIGH);
@@ -228,6 +241,246 @@ bool moveTo(float x, float y) {
 float squareX(uint8_t file) { return file * SQUARE_SIZE_MM; }
 float squareY(uint8_t rank) { return rank * SQUARE_SIZE_MM; }
 
+uint8_t squareIndex(uint8_t file, uint8_t rank) { return rank * 8 + file; }
+uint8_t indexFile(uint8_t index) { return index % 8; }
+uint8_t indexRank(uint8_t index) { return index / 8; }
+
+bool routeContains(const uint8_t *route, uint8_t square) {
+  return route[0] == square || route[1] == square || route[2] == square;
+}
+
+bool findEmptyPath(char state[8][8], uint8_t source, uint8_t destination,
+                   const uint8_t *forbiddenRoute, uint8_t *path, uint8_t &pathLength) {
+  memset(plannerParent, -1, sizeof(plannerParent));
+  uint8_t head = 0;
+  uint8_t tail = 0;
+  plannerQueue[tail++] = source;
+  plannerParent[source] = source;
+
+  const int8_t fileSteps[4] = {1, -1, 0, 0};
+  const int8_t rankSteps[4] = {0, 0, 1, -1};
+  while (head < tail && plannerParent[destination] < 0) {
+    uint8_t current = plannerQueue[head++];
+    int currentFile = indexFile(current);
+    int currentRank = indexRank(current);
+    for (uint8_t direction = 0; direction < 4; direction++) {
+      int nextFile = currentFile + fileSteps[direction];
+      int nextRank = currentRank + rankSteps[direction];
+      if (nextFile < 0 || nextFile > 7 || nextRank < 0 || nextRank > 7) continue;
+      uint8_t next = squareIndex(nextFile, nextRank);
+      if (plannerParent[next] >= 0 ||
+          (next != destination && state[nextFile][nextRank]) ||
+          (next != source && next == forbiddenRoute[2])) continue;
+      plannerParent[next] = current;
+      plannerQueue[tail++] = next;
+    }
+  }
+  if (plannerParent[destination] < 0) return false;
+
+  pathLength = 0;
+  uint8_t current = destination;
+  while (current != source) {
+    path[pathLength++] = current;
+    current = plannerParent[current];
+  }
+  path[pathLength++] = source;
+  for (uint8_t left = 0, right = pathLength - 1; left < right; left++, right--) {
+    uint8_t temporary = path[left];
+    path[left] = path[right];
+    path[right] = temporary;
+  }
+  return true;
+}
+
+void buildKnightRoute(uint8_t sourceFile, uint8_t sourceRank,
+                      uint8_t destinationFile, uint8_t destinationRank,
+                      uint8_t sequence, uint8_t *route) {
+  int8_t fileStep = destinationFile > sourceFile ? 1 : -1;
+  int8_t rankStep = destinationRank > sourceRank ? 1 : -1;
+  uint8_t file = sourceFile;
+  uint8_t rank = sourceRank;
+  bool longFileAxis = abs((int)destinationFile - sourceFile) == 2;
+
+  for (uint8_t step = 0; step < 3; step++) {
+    bool moveLongAxis = sequence == 0 ? step < 2 : sequence == 1 ? step != 1 : step > 0;
+    if (longFileAxis == moveLongAxis) file += fileStep;
+    else rank += rankStep;
+    route[step] = squareIndex(file, rank);
+  }
+}
+
+bool candidateParkingPath(char state[8][8], uint8_t blocker, const uint8_t *route,
+                          uint8_t skipCandidates, uint8_t *parking,
+                          uint8_t *path, uint8_t &pathLength) {
+  uint8_t blockerFile = indexFile(blocker);
+  uint8_t blockerRank = indexRank(blocker);
+  for (uint8_t distance = 1; distance <= 14; distance++) {
+    for (uint8_t rank = 0; rank < 8; rank++) {
+      for (uint8_t file = 0; file < 8; file++) {
+        if (emergencyRequested()) {
+          stopController();
+          return false;
+        }
+        uint8_t candidate = squareIndex(file, rank);
+        if (state[file][rank] || routeContains(route, candidate) ||
+            abs((int)file - blockerFile) + abs((int)rank - blockerRank) != distance) continue;
+        if (findEmptyPath(state, blocker, candidate, route, path, pathLength)) {
+          if (skipCandidates) {
+            skipCandidates--;
+            continue;
+          }
+          *parking = candidate;
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+uint8_t gridDistance(uint8_t first, uint8_t second) {
+  return abs((int)indexFile(first) - indexFile(second)) +
+         abs((int)indexRank(first) - indexRank(second));
+}
+
+uint16_t carriageDistanceTo(uint8_t square) {
+  float distance = fabs(carriageX - squareX(indexFile(square))) +
+                   fabs(carriageY - squareY(indexRank(square)));
+  return lroundf(distance / SQUARE_SIZE_MM);
+}
+
+bool buildRelocationPlan(const uint8_t *route, const uint8_t *blockers,
+                         uint8_t blockerCount, bool reverseOrder, uint8_t knightSource,
+                         KnightPlan &candidate) {
+  candidate.relocationCount = blockerCount;
+  candidate.loadedSteps = 3 + carriageDistanceTo(knightSource);
+  if (!blockerCount) return true;
+
+  uint8_t firstBlockerIndex = reverseOrder ? blockerCount - 1 : 0;
+  uint8_t firstBlocker = blockers[firstBlockerIndex];
+  bool found = false;
+  uint16_t bestLoadedSteps = 0;
+  for (uint8_t skippedFirst = 0; skippedFirst < 64; skippedFirst++) {
+    char state[8][8];
+    memcpy(state, board, sizeof(state));
+    state[indexFile(route[2])][indexRank(route[2])] = 0;
+
+    RelocationPlan first;
+    first.piece = state[indexFile(firstBlocker)][indexRank(firstBlocker)];
+    first.source = firstBlocker;
+    if (!candidateParkingPath(state, firstBlocker, route, skippedFirst, &first.parking,
+                              first.path, first.pathLength)) break;
+    state[indexFile(firstBlocker)][indexRank(firstBlocker)] = 0;
+    state[indexFile(first.parking)][indexRank(first.parking)] = first.piece;
+
+    RelocationPlan second;
+    uint16_t loadedSteps = 3 + 2 * (first.pathLength - 1) +
+                 carriageDistanceTo(first.source) +
+                 gridDistance(first.parking, knightSource) +
+                 gridDistance(route[2], first.parking);
+    if (blockerCount == 2) {
+      uint8_t secondBlockerIndex = reverseOrder ? 0 : 1;
+      uint8_t secondBlocker = blockers[secondBlockerIndex];
+      second.piece = state[indexFile(secondBlocker)][indexRank(secondBlocker)];
+      second.source = secondBlocker;
+      if (!candidateParkingPath(state, secondBlocker, route, 0, &second.parking,
+                                second.path, second.pathLength)) continue;
+      loadedSteps += 2 * (second.pathLength - 1);
+      loadedSteps -= gridDistance(first.parking, knightSource) +
+             gridDistance(route[2], first.parking);
+      loadedSteps += gridDistance(first.parking, second.source) +
+             gridDistance(second.parking, knightSource) +
+             gridDistance(route[2], second.parking) +
+             gridDistance(second.source, first.parking);
+    }
+
+    if (!found || loadedSteps < bestLoadedSteps) {
+      found = true;
+      bestLoadedSteps = loadedSteps;
+      candidate.relocations[0] = first;
+      if (blockerCount == 2) candidate.relocations[1] = second;
+    }
+  }
+  candidate.loadedSteps = bestLoadedSteps;
+  return found;
+}
+
+bool planKnightMove(uint8_t sourceFile, uint8_t sourceRank,
+                    uint8_t destinationFile, uint8_t destinationRank) {
+  knightPlan.valid = false;
+  uint8_t knightSource = squareIndex(sourceFile, sourceRank);
+  for (uint8_t sequence = 0; sequence < 3; sequence++) {
+    uint8_t route[3];
+    buildKnightRoute(sourceFile, sourceRank, destinationFile, destinationRank, sequence, route);
+    uint8_t blockers[2];
+    uint8_t blockerCount = 0;
+    for (uint8_t step = 0; step < 2; step++) {
+      if (board[indexFile(route[step])][indexRank(route[step])]) blockers[blockerCount++] = route[step];
+    }
+
+    uint8_t orderCount = blockerCount == 2 ? 2 : 1;
+    for (uint8_t order = 0; order < orderCount; order++) {
+      KnightPlan candidate;
+      candidate.valid = true;
+      memcpy(candidate.route, route, sizeof(route));
+      if (!buildRelocationPlan(route, blockers, blockerCount, order == 1,
+               knightSource, candidate)) continue;
+      if (!knightPlan.valid || candidate.relocationCount < knightPlan.relocationCount ||
+          (candidate.relocationCount == knightPlan.relocationCount &&
+           candidate.loadedSteps < knightPlan.loadedSteps)) {
+        knightPlan = candidate;
+      }
+    }
+  }
+  return knightPlan.valid;
+}
+
+bool carryAlongPath(const uint8_t *path, uint8_t pathLength, bool reverse) {
+  uint8_t source = reverse ? path[pathLength - 1] : path[0];
+  if (!pickupSquare(indexFile(source), indexRank(source))) return false;
+  for (uint8_t step = 1; step < pathLength; step++) {
+    uint8_t index = reverse ? path[pathLength - 1 - step] : path[step];
+    if (!moveTo(squareX(indexFile(index)), squareY(indexRank(index)))) {
+      releaseMagnet();
+      return false;
+    }
+  }
+  releaseMagnet();
+  return !motionAborted;
+}
+
+bool executeKnightPlan(uint8_t sourceFile, uint8_t sourceRank,
+                       uint8_t destinationFile, uint8_t destinationRank) {
+  char knight = board[sourceFile][sourceRank];
+  for (uint8_t relocation = 0; relocation < knightPlan.relocationCount; relocation++) {
+    RelocationPlan &planned = knightPlan.relocations[relocation];
+    if (!carryAlongPath(planned.path, planned.pathLength, false)) return false;
+    board[indexFile(planned.source)][indexRank(planned.source)] = 0;
+    board[indexFile(planned.parking)][indexRank(planned.parking)] = planned.piece;
+  }
+
+  if (!pickupSquare(sourceFile, sourceRank)) return false;
+  for (uint8_t step = 0; step < 3; step++) {
+    uint8_t target = knightPlan.route[step];
+    if (!moveTo(squareX(indexFile(target)), squareY(indexRank(target)))) {
+      releaseMagnet();
+      return false;
+    }
+  }
+  releaseMagnet();
+  if (motionAborted) return false;
+  board[sourceFile][sourceRank] = 0;
+  board[destinationFile][destinationRank] = knight;
+
+  for (int8_t relocation = knightPlan.relocationCount - 1; relocation >= 0; relocation--) {
+    RelocationPlan &planned = knightPlan.relocations[relocation];
+    if (!carryAlongPath(planned.path, planned.pathLength, true)) return false;
+    board[indexFile(planned.parking)][indexRank(planned.parking)] = 0;
+    board[indexFile(planned.source)][indexRank(planned.source)] = planned.piece;
+  }
+  return true;
+}
+
 float departureLaneY(uint8_t sourceRank, uint8_t destinationRank) {
   if (destinationRank > sourceRank) return squareY(sourceRank) + HALF_SQUARE_MM;
   if (destinationRank < sourceRank) return squareY(sourceRank) - HALF_SQUARE_MM;
@@ -277,27 +530,11 @@ bool pickupSquare(uint8_t file, uint8_t rank) {
   return !motionAborted;
 }
 
-bool removePieceToGraveyard(uint8_t file, uint8_t rank) {
-  if (!pickupSquare(file, rank)) return false;
-
-  // Enter an internal lane, approach the right edge between ranks 5 and 6,
-  // then slide along the edge to the requested position outside h5.
-  uint8_t graveyardRank = 4;
-  float sourceLaneY = departureLaneY(rank, graveyardRank);
-  float internalRightLaneX = squareX(7) - HALF_SQUARE_MM;
-  if (!moveTo(squareX(file), sourceLaneY) ||
-      !moveTo(internalRightLaneX, sourceLaneY) ||
-      !moveTo(internalRightLaneX, GRAVEYARD_APPROACH_Y_MM) ||
-      !moveTo(GRAVEYARD_X_MM, GRAVEYARD_APPROACH_Y_MM) ||
-      !moveTo(GRAVEYARD_X_MM, GRAVEYARD_Y_MM)) return false;
-
-  releaseMagnet();
-  Serial.println(F("warning:graveyard-drop-not-sensor-verified"));
-  return !motionAborted;
-}
-
 bool mechanicallyMovePiece(uint8_t sourceFile, uint8_t sourceRank,
                            uint8_t destinationFile, uint8_t destinationRank) {
+  if (board[sourceFile][sourceRank] == 'N') {
+    return executeKnightPlan(sourceFile, sourceRank, destinationFile, destinationRank);
+  }
   if (!pickupSquare(sourceFile, sourceRank)) return false;
   if (!carryBetweenSquares(sourceFile, sourceRank, destinationFile, destinationRank)) {
     releaseMagnet();
@@ -488,7 +725,7 @@ bool normalizeMoveNotation(const char *notation, char *coordinateMove) {
   bool destinationOccupied = board[destinationFile][destinationRank] != 0;
   if (captureMarked != destinationOccupied) return false;
 
-  char boardPiece = whiteToMove ? requestedType : lowerAscii(requestedType);
+  char boardPiece = requestedType;
   uint8_t sourceFile = 0;
   uint8_t sourceRank = 0;
   uint8_t candidates = 0;
@@ -531,8 +768,8 @@ void runSelfTest() {
                 !normalizeMoveNotation("xd5", coordinateMove) &&
                 !normalizeMoveNotation("ed5", coordinateMove) &&
                 !normalizeMoveNotation("e4+", coordinateMove) &&
-                fabs(GRAVEYARD_X_MM - 328.125f) < 0.01f &&
-                fabs(GRAVEYARD_Y_MM - 175.0f) < 0.01f;
+                planKnightMove(1, 0, 2, 2) &&
+                knightPlan.relocationCount == 1;
 
   memcpy(board, savedBoard, sizeof(board));
   whiteToMove = savedWhiteToMove;
@@ -541,10 +778,6 @@ void runSelfTest() {
 
 void rejectChessMove(const __FlashStringHelper *message) {
   Serial.println(message);
-  if (!whiteToMove && boardTrusted) {
-    boardTrusted = false;
-    Serial.println(F("warning:rejected-black-entry; physical-board-state-untrusted"));
-  }
 }
 
 void executeChessMove(const char *moveText) {
@@ -589,8 +822,8 @@ void executeChessMove(const char *moveText) {
     rejectChessMove(F("error:destination-has-same-colour-piece"));
     return;
   }
-  if (isWhite(movingPiece) != whiteToMove) {
-    rejectChessMove(F("error:wrong-side-to-move"));
+  if (isBlack(movingPiece)) {
+    rejectChessMove(F("error:black-moves-disabled; only-white-is-automated"));
     return;
   }
   if (destinationPiece == 'K' || destinationPiece == 'k') {
@@ -641,29 +874,18 @@ void executeChessMove(const char *moveText) {
     rejectChessMove(F("error:move-leaves-king-in-check"));
     return;
   }
-  if (movingPiece == 'N' && !KNIGHT_LANE_ROUTE_VALIDATED) {
-    rejectChessMove(F("error:knight-lane-clearance-not-physically-validated"));
+  if (destinationPiece && isWhite(movingPiece)) {
+    rejectChessMove(F("error:white-captures-disabled; remove-piece-manually"));
+    return;
+  }
+  if (movingPiece == 'N' &&
+      !planKnightMove(sourceFile, sourceRank, destinationFile, destinationRank)) {
+    rejectChessMove(F("error:no-reversible-knight-relocation-plan"));
     return;
   }
 
   Serial.print(F("busy:"));
   Serial.println(moveText);
-
-  if (isBlack(movingPiece)) {
-    board[sourceFile][sourceRank] = 0;
-    board[destinationFile][destinationRank] = movingPiece;
-    whiteToMove = true;
-    Serial.print(F("ok:human-black-move-recorded:"));
-    Serial.println(moveText);
-    return;
-  }
-
-  if (destinationPiece && !removePieceToGraveyard(destinationFile, destinationRank)) {
-    boardTrusted = false;
-    if (motionAborted) return;
-    Serial.println(F("error:captured-piece-removal-failed; physical-state-uncertain"));
-    return;
-  }
 
   if (!mechanicallyMovePiece(sourceFile, sourceRank, destinationFile, destinationRank)) {
     boardTrusted = false;
@@ -674,7 +896,7 @@ void executeChessMove(const char *moveText) {
 
   board[sourceFile][sourceRank] = 0;
   board[destinationFile][destinationRank] = movingPiece;
-  whiteToMove = !whiteToMove;
+  whiteToMove = true;
 
   Serial.print(F("ok:"));
   Serial.println(moveText);
@@ -717,9 +939,8 @@ void printStatus() {
   Serial.println(STEP_ACCELERATION, 1);
   Serial.print(F("info:board_confirmed="));
   Serial.println(boardTrusted ? 1 : 0);
-  Serial.print(F("info:side_to_move="));
-  Serial.println(whiteToMove ? F("white") : F("black"));
-  Serial.println(F("info:motion_side=white; black_moves_are_human-recorded"));
+  Serial.println(F("info:side_to_move=white"));
+  Serial.println(F("info:motion_side=white; black_moves_disabled"));
   Serial.print(F("info:actuator_release_us="));
   Serial.print(ACTUATOR_RETRACT_US);
   Serial.print(F(",actuator_engage_us="));
@@ -736,8 +957,7 @@ void printStatus() {
   Serial.println(SWAP_X_Y ? 1 : 0);
   Serial.print(F("info:emergency_stop_latched="));
   Serial.println(emergencyStopLatched ? 1 : 0);
-  Serial.print(F("info:knight_lane_route_validated="));
-  Serial.println(KNIGHT_LANE_ROUTE_VALIDATED ? 1 : 0);
+  Serial.println(F("info:knight_planner=temporary-blocker-relocation"));
   Serial.println(F("ok:status"));
 }
 
@@ -832,8 +1052,8 @@ void setup() {
   settleActuator();
   resetBoardState();
 
-  Serial.println(F("OpenMove chess motion controller 1.0"));
-  Serial.println(F("mode:white pieces automated; move black physically, then enter its move"));
+  Serial.println(F("OpenMove chess motion controller 1.2"));
+  Serial.println(F("mode:white-only automation; black moves disabled"));
   Serial.println(F("ready:place carriage at a1 centre, then send HOME"));
 }
 

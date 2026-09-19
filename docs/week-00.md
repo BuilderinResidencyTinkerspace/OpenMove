@@ -51,3 +51,51 @@ That seemed like a good reason to try it.
 The next step was to turn the vague sketch into smaller experiments: decide how the XY mechanism might work, identify the controller and motion hardware, and validate movement before pretending the board could play chess.
 
 Because a brilliant chess engine is not very useful if the board responds by launching a knight into another dimension.
+
+## Experimental corner-origin update — 19 September 2026
+
+The manual XY origin was changed from the centre of `a1` to the centre of `h1`.
+Firmware 2.1 mirrors the X coordinate while preserving normal chess file names:
+`h1` is `(0, 0)`, local positive X points toward the a-file, and `a8` is
+`(306.25, 306.25)` mm. The firmware and host prompts were updated and the Uno
+build succeeds. Firmware 2.0 was uploaded to `/dev/ttyUSB0`, then `HOME` was
+accepted at h1 and `status` reported `homed=1,x=0.00,y=0.00`. Physical movement
+direction validation remains pending. A reversible 1 mm test completed X+, X-,
+Y+, and Y- jogs without a controller error or reset and returned the reported
+position to `(0.00, 0.00)`; the observed physical directions still need user
+confirmation.
+
+The firmware and desktop GUI were then audited together. Firmware 2.1 now
+reports serial protocol version 2 and its `h1` home convention. The GUI waits
+for startup before requesting status, rejects incompatible firmware/home
+coordinates, refreshes status after manual hardware commands, and invalidates
+GUI board synchronization when firmware reports an untrusted board or a
+physical-state failure. Firmware 2.1 compiles; upload and physical regression
+testing were next. Firmware 2.1 was uploaded to `/dev/ttyUSB0`; live `status`
+reported protocol 2 and `home_square=h1`, and `SELFTEST` passed without motion.
+The upload correctly cleared home and board confirmation. Physical motion
+regression testing remains pending.
+
+Follow-up physical GOTO tests exposed that the h1 label was wrong: `GOTO g1`
+reached the black knight on g8, while `GOTO h2` reached the black pawn on h7.
+The file axis was correct and the rank axis was exactly mirrored. The actual
+manual origin is therefore h8. Firmware 2.2 changes the mapping to `h8 = (0, 0)`,
+with positive X toward a-file and positive Y toward rank 1. The serial protocol
+was bumped to version 3 so the GUI cannot connect its motion controls to the
+incompatible h1 mapping. Firmware 2.2 was uploaded to `/dev/ttyUSB0`; live status
+reported protocol 3, `home_square=h8`, and positive Y toward rank 1, and the
+no-motion self-test passed. Physical regression testing remains pending.
+
+The h8 conclusion was then falsified by a stronger two-axis test. Under the
+mirrored build, `GOTO e2` reached d7 and `GOTO h8` returned to physical a1—an
+exact 180-degree mapping. The actual machine origin is a1. Firmware 2.3 restores
+direct coordinates (`a1 = (0, 0)`, positive X toward h-file, positive Y toward
+rank 8) and bumps the protocol to version 4. Firmware 2.3 was uploaded to
+`/dev/ttyUSB0`; live status reported the direct a1 coordinate convention and
+the no-motion self-test passed. Physical regression testing remains pending.
+
+Later on 19 September, the current working-tree chess-controller sketch was
+compiled for Arduino Uno and uploaded to `/dev/ttyUSB0`. The upload completed
+successfully, and a non-motion serial check showed the startup banner
+`OpenMove chess motion controller 1.2`, white-only automation mode, and the
+manual a1-home prompt. No physical movement was commanded or validated.
