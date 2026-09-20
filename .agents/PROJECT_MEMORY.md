@@ -85,6 +85,18 @@ Early prototype — mechanical development. The immediate objective is to build 
   `reverse_logical_x=1`. The user then physically confirmed the corrected X+
   jog works as intended. Small positive X and Y direction tests now match the
   a1-to-b1 and a1-to-a2 conventions; full-square accuracy remains unvalidated.
+- Experimental firmware 2.6/protocol 7 adds alternating White-and-Black
+  non-capture move execution and a `RETURN` command used by the GUI to reverse
+  an accepted replay. The GUI accepts a standard-start mainline PGN, plays both
+  sides, waits 10 seconds after the final move, reverses the moves to restore
+  the standard position, and can repeat while its loop toggle is on. Captures,
+  castling, en passant, promotions, custom-FEN starts, and physical validation
+  remain unsupported. Firmware compiled for Uno (19,146 bytes flash; 858 bytes
+  RAM) on 2026-09-20 and was uploaded to `/dev/ttyUSB0` after closing the GUI
+  serial connection. A read-only post-upload status query confirmed firmware
+  2.6, protocol 7, both-side automation, and the coordinate contract. Upload
+  reset manual home and board confirmation; no axis motion or physical PGN
+  replay was performed.
 
 ## Unknown or unvalidated
 

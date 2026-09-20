@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import io
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
 
 import chess
+import chess.pgn
 from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import (
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
+    QCheckBox,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -38,7 +41,7 @@ PIECES = {
 }
 
 EXPECTED_MAPPING = {
-    "protocol": "6",
+    "protocol": "7",
     "home_square": "a1",
     "x_axis": "a-to-h",
     "y_axis": "1-to-8",
@@ -47,8 +50,7 @@ EXPECTED_MAPPING = {
 }
 
 
-def parse_white_move(board: chess.Board, text: str) -> chess.Move:
-    board.turn = chess.WHITE
+def parse_move(board: chess.Board, text: str) -> chess.Move:
     notation = text.strip()
     try:
         move = chess.Move.from_uci(notation.lower())
@@ -58,12 +60,10 @@ def parse_white_move(board: chess.Board, text: str) -> chess.Move:
         try:
             move = board.parse_san(notation)
         except ValueError as error:
-            raise ValueError("Enter a legal white move such as e2e4 or Nf3") from error
+            raise ValueError("Enter a legal move such as e2e4 or Nf3") from error
 
-    if board.color_at(move.from_square) != chess.WHITE:
-        raise ValueError("Only white pieces are automated")
     if board.is_capture(move):
-        raise ValueError("White captures are disabled until removal is validated")
+        raise ValueError("Captures are disabled until removal is validated")
     if board.is_castling(move):
         raise ValueError("Castling is not yet supported")
     if move.promotion:
@@ -72,7 +72,6 @@ def parse_white_move(board: chess.Board, text: str) -> chess.Move:
 
 
 def executable_moves(board: chess.Board) -> list[chess.Move]:
-    board.turn = chess.WHITE
     return [
         move
         for move in board.legal_moves
@@ -80,6 +79,30 @@ def executable_moves(board: chess.Board) -> list[chess.Move]:
         and not board.is_castling(move)
         and not move.promotion
     ]
+
+
+def parse_replayable_pgn(text: str) -> list[chess.Move]:
+    game = chess.pgn.read_game(io.StringIO(text))
+    if game is None:
+        raise ValueError("Paste a complete PGN game")
+    if game.errors:
+        raise ValueError(f"Invalid PGN: {game.errors[0]}")
+    if "FEN" in game.headers or game.headers.get("SetUp") == "1":
+        raise ValueError("PGN replay must start from the standard chess position")
+
+    board = game.board()
+    moves = list(game.mainline_moves())
+    if not moves:
+        raise ValueError("PGN has no mainline moves")
+    for move in moves:
+        if board.is_capture(move):
+            raise ValueError("PGN captures are not physically supported yet")
+        if board.is_castling(move):
+            raise ValueError("PGN castling is not physically supported yet")
+        if move.promotion:
+            raise ValueError("PGN promotions are not physically supported yet")
+        board.push(move)
+    return moves
 
 
 class SerialController(QObject):
@@ -334,6 +357,10 @@ class OpenMoveWindow(QMainWindow):
         self.pending_success: Callable[[], None] | None = None
         self.logs: deque[str] = deque(maxlen=2000)
         self.jog_mm = 10
+        self.playback_moves: list[chess.Move] = []
+        self.playback_index = 0
+        self.playback_active = False
+        self.playback_generation = 0
         self._build_ui(default_port)
         self._connect_signals()
         self._render_board()
@@ -378,12 +405,27 @@ class OpenMoveWindow(QMainWindow):
 
         move_row = QHBoxLayout()
         self.move_input = QLineEdit()
-        self.move_input.setPlaceholderText("e2e4 or Nf3")
-        self.move_button = QPushButton("Move White")
+        self.move_input.setPlaceholderText("e2e4, e7e5, or Nf3")
+        self.move_button = QPushButton("Move Piece")
         self.move_button.setObjectName("primary")
         move_row.addWidget(self.move_input, 1)
         move_row.addWidget(self.move_button)
         panel_layout.addLayout(move_row)
+
+        self.pgn_input = QTextEdit()
+        self.pgn_input.setPlaceholderText(
+            "Example: 1. f3 e6 2. g4 Qh4# 0-1\n"
+            "Standard-start, no-capture PGNs only; set HOME and RESETBOARD first."
+        )
+        self.pgn_input.setMinimumHeight(92)
+        panel_layout.addWidget(self.pgn_input)
+        playback_row = QHBoxLayout()
+        self.play_pgn_button = QPushButton("Play PGN")
+        self.play_pgn_button.setObjectName("primary")
+        self.loop_pgn_checkbox = QCheckBox("Loop after restore")
+        playback_row.addWidget(self.play_pgn_button)
+        playback_row.addWidget(self.loop_pgn_checkbox)
+        panel_layout.addLayout(playback_row)
 
         actions = QGridLayout()
         self.home_button = QPushButton("Set Home")
@@ -461,6 +503,7 @@ class OpenMoveWindow(QMainWindow):
         self.connect_button.clicked.connect(self._toggle_connection)
         self.move_button.clicked.connect(self._move_from_input)
         self.move_input.returnPressed.connect(self._move_from_input)
+        self.play_pgn_button.clicked.connect(self._play_pgn)
         self.board_widget.square_clicked.connect(self._square_clicked)
         self.home_button.clicked.connect(self._home)
         self.reset_button.clicked.connect(self._reset)
@@ -503,8 +546,12 @@ class OpenMoveWindow(QMainWindow):
             self.servo_down_button,
             self.disable_button,
         )
+        available = connected and not self.serial.pending_command and not self.playback_active
         for button in controls:
-            button.setEnabled(connected and not self.serial.pending_command)
+            button.setEnabled(available)
+        self.pgn_input.setEnabled(available)
+        self.play_pgn_button.setEnabled(available)
+        self.loop_pgn_checkbox.setEnabled(connected)
         self.abort_button.setEnabled(connected)
         self._update_move_enabled()
 
@@ -519,13 +566,27 @@ class OpenMoveWindow(QMainWindow):
         self._update_move_enabled()
 
     def _update_move_enabled(self) -> None:
-        mapping_ok = all(self.serial.status.get(key) == value for key, value in EXPECTED_MAPPING.items())
-        ready = self.serial.connected and not self.serial.pending_command and mapping_ok and self.serial.status.get("homed") == "1" and self.serial.status.get("board_confirmed") == "1"
+        ready = self._motion_ready()
         self.move_button.setEnabled(ready)
         self.move_input.setEnabled(ready)
+        self.play_pgn_button.setEnabled(ready)
 
-    def _send(self, command: str, success: Callable[[], None] | None = None, timeout: float = 90.0) -> None:
+    def _motion_ready(self) -> bool:
+        mapping_ok = all(self.serial.status.get(key) == value for key, value in EXPECTED_MAPPING.items())
+        return (
+            self.serial.connected
+            and not self.serial.pending_command
+            and not self.playback_active
+            and mapping_ok
+            and self.serial.status.get("homed") == "1"
+            and self.serial.status.get("board_confirmed") == "1"
+        )
+
+    def _send(self, command: str, success: Callable[[], None] | None = None,
+              timeout: float = 90.0, playback: bool = False) -> None:
         try:
+            if self.playback_active and not playback:
+                raise RuntimeError("PGN playback is active; use Abort to stop it")
             self.pending_success = success
             self.serial.send_async(command, timeout)
             self.command_status.setText(command)
@@ -539,15 +600,19 @@ class OpenMoveWindow(QMainWindow):
         del _response
         callback = self.pending_success
         self.pending_success = None
-        if callback:
-            callback()
         self.command_status.setText("Idle")
         self.connect_button.setEnabled(True)
         self._set_connected(self.serial.connected)
-        self.notice.setText(f"{command} completed.")
+        if callback:
+            callback()
+        else:
+            self.notice.setText(f"{command} completed.")
 
     def _command_failed(self, _command: str, message: str) -> None:
         del _command
+        if self.playback_active:
+            self.playback_active = False
+            self.playback_generation += 1
         self.pending_success = None
         self.command_status.setText("Idle")
         self.connect_button.setEnabled(True)
@@ -573,7 +638,7 @@ class OpenMoveWindow(QMainWindow):
         if not text:
             return
         try:
-            move = parse_white_move(self.board, text)
+            move = parse_move(self.board, text)
         except ValueError as error:
             self._show_error(str(error))
             return
@@ -584,8 +649,8 @@ class OpenMoveWindow(QMainWindow):
             return
         piece = self.board.piece_at(chess.parse_square(square_name))
         selected = self.board_widget.selected
-        if selected is None or (piece and piece.color == chess.WHITE):
-            if piece and piece.color == chess.WHITE:
+        if selected is None or (piece and piece.color == self.board.turn):
+            if piece and piece.color == self.board.turn:
                 self.board_widget.selected = square_name
                 self.board_widget.targets = {
                     chess.square_name(move.to_square)
@@ -598,7 +663,7 @@ class OpenMoveWindow(QMainWindow):
             self.board_widget.selected = None
             self.board_widget.targets.clear()
             self.board_widget.update()
-            self._show_error("That destination is not an executable white move")
+            self._show_error("That destination is not an executable move")
             return
         move = chess.Move.from_uci(selected + square_name)
         self.board_widget.selected = None
@@ -608,17 +673,88 @@ class OpenMoveWindow(QMainWindow):
     def _execute_move(self, move: chess.Move) -> None:
         def move_complete() -> None:
             self.board.push(move)
-            self.board.turn = chess.WHITE
             self.move_input.clear()
             self._render_board()
         self._send(move.uci(), success=move_complete)
 
+    def _play_pgn(self) -> None:
+        if not self._motion_ready():
+            self._show_error("Set home, reset the physical board, and confirm protocol 7 before PGN playback")
+            return
+        if self.board.fen() != chess.STARTING_FEN:
+            self._show_error("Reset the confirmed physical board before PGN playback")
+            return
+        try:
+            moves = parse_replayable_pgn(self.pgn_input.toPlainText())
+        except ValueError as error:
+            self._show_error(str(error))
+            return
+        self.playback_moves = moves
+        self.playback_index = 0
+        self.playback_active = True
+        self.playback_generation += 1
+        self.notice.setText(f"Playing {len(moves)} PGN moves. Abort stops the sequence.")
+        self._set_connected(self.serial.connected)
+        self._play_next_pgn_move()
+
+    def _play_next_pgn_move(self) -> None:
+        if not self.playback_active:
+            return
+        if self.playback_index == len(self.playback_moves):
+            generation = self.playback_generation
+            self.notice.setText("PGN complete. Restoring the standard position in 10 seconds.")
+            QTimer.singleShot(10_000, lambda: self._start_pgn_restore(generation))
+            return
+        move = self.playback_moves[self.playback_index]
+        self._send(move.uci(), success=self._pgn_move_completed, timeout=120.0, playback=True)
+
+    def _pgn_move_completed(self) -> None:
+        self.board.push(self.playback_moves[self.playback_index])
+        self.playback_index += 1
+        self._render_board()
+        self._play_next_pgn_move()
+
+    def _start_pgn_restore(self, generation: int) -> None:
+        if not self.playback_active or generation != self.playback_generation:
+            return
+        self.notice.setText("Returning pieces to the standard position.")
+        self._restore_next_pgn_move()
+
+    def _restore_next_pgn_move(self) -> None:
+        if not self.playback_active:
+            return
+        if self.playback_index == 0:
+            self._pgn_restore_completed()
+            return
+        move = self.playback_moves[self.playback_index - 1]
+        reverse_move = chess.square_name(move.to_square) + chess.square_name(move.from_square)
+        self._send(f"RETURN {reverse_move}", success=self._pgn_return_completed,
+                   timeout=120.0, playback=True)
+
+    def _pgn_return_completed(self) -> None:
+        self.board.pop()
+        self.playback_index -= 1
+        self._render_board()
+        self._restore_next_pgn_move()
+
+    def _pgn_restore_completed(self) -> None:
+        if self.loop_pgn_checkbox.isChecked():
+            self.notice.setText("Standard position restored. Replaying PGN.")
+            self.playback_index = 0
+            self._play_next_pgn_move()
+            return
+        self.playback_active = False
+        self.notice.setText("Standard position restored. PGN loop is off.")
+        self._set_connected(self.serial.connected)
+
     def _render_board(self) -> None:
-        self.board.turn = chess.WHITE
         self.board_widget.board = self.board.copy(stack=False)
         self.board_widget.update()
 
     def _abort(self) -> None:
+        if self.playback_active:
+            self.playback_active = False
+            self.playback_generation += 1
         try:
             self.serial.abort()
             self.notice.setText("Abort sent. Re-home and reset the board before movement.")

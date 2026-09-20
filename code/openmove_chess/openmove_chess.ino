@@ -5,8 +5,8 @@
 // Coordinate contract shared with every host controller. Do not change one
 // field independently: a1 is the only manual home, white starts on ranks 1-2,
 // +X advances files a->h, and +Y advances ranks 1->8.
-const uint8_t PROTOCOL_VERSION = 6;
-const char FIRMWARE_VERSION[] = "2.5";
+const uint8_t PROTOCOL_VERSION = 7;
+const char FIRMWARE_VERSION[] = "2.6";
 
 // Confirmed CNC Shield V3 wiring.
 const uint8_t A_STEP_PIN = 2;
@@ -542,7 +542,7 @@ bool pickupSquare(uint8_t file, uint8_t rank) {
 
 bool mechanicallyMovePiece(uint8_t sourceFile, uint8_t sourceRank,
                            uint8_t destinationFile, uint8_t destinationRank) {
-  if (board[sourceFile][sourceRank] == 'N') {
+  if (board[sourceFile][sourceRank] == 'N' || board[sourceFile][sourceRank] == 'n') {
     return executeKnightPlan(sourceFile, sourceRank, destinationFile, destinationRank);
   }
   if (!pickupSquare(sourceFile, sourceRank)) return false;
@@ -735,6 +735,7 @@ bool normalizeMoveNotation(const char *notation, char *coordinateMove) {
   bool destinationOccupied = board[destinationFile][destinationRank] != 0;
   if (captureMarked != destinationOccupied) return false;
 
+  if (!whiteToMove) requestedType += 'a' - 'A';
   char boardPiece = requestedType;
   uint8_t sourceFile = 0;
   uint8_t sourceRank = 0;
@@ -832,8 +833,8 @@ void executeChessMove(const char *moveText) {
     rejectChessMove(F("error:destination-has-same-colour-piece"));
     return;
   }
-  if (isBlack(movingPiece)) {
-    rejectChessMove(F("error:black-moves-disabled; only-white-is-automated"));
+  if (whiteToMove != isWhite(movingPiece)) {
+    rejectChessMove(F("error:wrong-side-to-move"));
     return;
   }
   if (destinationPiece == 'K' || destinationPiece == 'k') {
@@ -884,11 +885,11 @@ void executeChessMove(const char *moveText) {
     rejectChessMove(F("error:move-leaves-king-in-check"));
     return;
   }
-  if (destinationPiece && isWhite(movingPiece)) {
-    rejectChessMove(F("error:white-captures-disabled; remove-piece-manually"));
+  if (destinationPiece) {
+    rejectChessMove(F("error:captures-not-validated; remove-piece-manually"));
     return;
   }
-  if (movingPiece == 'N' &&
+  if ((movingPiece == 'N' || movingPiece == 'n') &&
       !planKnightMove(sourceFile, sourceRank, destinationFile, destinationRank)) {
     rejectChessMove(F("error:no-reversible-knight-relocation-plan"));
     return;
@@ -906,9 +907,59 @@ void executeChessMove(const char *moveText) {
 
   board[sourceFile][sourceRank] = 0;
   board[destinationFile][destinationRank] = movingPiece;
-  whiteToMove = true;
+  whiteToMove = !isWhite(movingPiece);
 
   Serial.print(F("ok:"));
+  Serial.println(moveText);
+}
+
+void returnPiece(const char *moveText) {
+  if (!boardTrusted) {
+    Serial.println(F("error:confirm-standard-physical-board-with-RESETBOARD"));
+    return;
+  }
+  if (!manuallyHomed) {
+    Serial.println(F("error:not-homed; place carriage at a1 centre and send HOME"));
+    return;
+  }
+  if (strlen(moveText) != 4) {
+    Serial.println(F("error:use RETURN followed by a coordinate move such as e4e2"));
+    return;
+  }
+
+  uint8_t sourceFile, sourceRank, destinationFile, destinationRank;
+  if (!parseSquare(moveText, sourceFile, sourceRank) ||
+      !parseSquare(moveText + 2, destinationFile, destinationRank)) {
+    Serial.println(F("error:invalid-square"));
+    return;
+  }
+  char movingPiece = board[sourceFile][sourceRank];
+  if (!movingPiece) {
+    Serial.println(F("error:return-source-square-empty-in-internal-board-state"));
+    return;
+  }
+  if (board[destinationFile][destinationRank]) {
+    Serial.println(F("error:return-destination-not-empty-in-internal-board-state"));
+    return;
+  }
+  if ((movingPiece == 'N' || movingPiece == 'n') &&
+      !planKnightMove(sourceFile, sourceRank, destinationFile, destinationRank)) {
+    Serial.println(F("error:no-reversible-knight-relocation-plan"));
+    return;
+  }
+
+  Serial.print(F("busy:return-"));
+  Serial.println(moveText);
+  if (!mechanicallyMovePiece(sourceFile, sourceRank, destinationFile, destinationRank)) {
+    boardTrusted = false;
+    if (motionAborted) return;
+    Serial.println(F("error:return-piece-failed; physical-state-may-be-uncertain"));
+    return;
+  }
+  board[sourceFile][sourceRank] = 0;
+  board[destinationFile][destinationRank] = movingPiece;
+  whiteToMove = isWhite(movingPiece);
+  Serial.print(F("ok:return-"));
   Serial.println(moveText);
 }
 
@@ -952,8 +1003,9 @@ void printStatus() {
   Serial.print(F("info:protocol="));
   Serial.print(PROTOCOL_VERSION);
   Serial.println(F(",home_square=a1,x_axis=a-to-h,y_axis=1-to-8,white_ranks=1-2,x_motor_direction=reverse"));
-  Serial.println(F("info:side_to_move=white"));
-  Serial.println(F("info:motion_side=white; black_moves_disabled"));
+  Serial.print(F("info:side_to_move="));
+  Serial.println(whiteToMove ? F("white") : F("black"));
+  Serial.println(F("info:motion_side=white-and-black; captures-disabled"));
   Serial.print(F("info:actuator_release_us="));
   Serial.print(ACTUATOR_RETRACT_US);
   Serial.print(F(",actuator_engage_us="));
@@ -1016,6 +1068,8 @@ void processCommand(char *command) {
     Serial.println(F("ok:actuator-extended; magnet-engaged"));
   } else if (!strncmp(command, "goto ", 5)) {
     gotoSquare(command + 5);
+  } else if (!strncmp(command, "return ", 7)) {
+    returnPiece(command + 7);
   } else if (!strcmp(command, "jogx+10") || !strcmp(command, "jogx-10") ||
              !strcmp(command, "jogy+10") || !strcmp(command, "jogy-10") ||
              !strcmp(command, "jogx+1") || !strcmp(command, "jogx-1") ||
@@ -1070,7 +1124,7 @@ void setup() {
   Serial.print(F("OpenMove chess motion controller "));
   Serial.println(FIRMWARE_VERSION);
   Serial.println(F("mapping:home=a1,+x=a-to-h,+y=1-to-8,white=ranks-1-2"));
-  Serial.println(F("mode:white-only automation; black moves disabled"));
+  Serial.println(F("mode:white-and-black automation; captures disabled"));
   Serial.println(F("ready:place carriage at a1 centre, then send HOME"));
 }
 

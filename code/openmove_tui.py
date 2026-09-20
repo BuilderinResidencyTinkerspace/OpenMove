@@ -208,7 +208,7 @@ class OpenMoveTUI:
             "Origin:          h = set a1 square centre as HOME",
             "Actuator:        0 = retract/release   9 = extend/engage",
             "Position:        g = move magnet to a square centre, e.g. e3",
-            "Chess:           m = enter coordinate or SAN move, e.g. e2e4 / Nxe5",
+            "Chess:           m = enter a coordinate or SAN move for either side, e.g. e2e4 / e7e5",
             "Controller:      s = status   t = no-motion self-test   r = reset board   d = disable",
             "Application:     q = quit (does not change hardware state)",
         ]

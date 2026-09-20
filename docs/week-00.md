@@ -128,3 +128,24 @@ testing remained pending. The user subsequently confirmed that the corrected
 positive-X jog works as intended. Small positive X and Y direction tests now
 match a1-to-b1 and a1-to-a2; full-square positioning accuracy is still
 unvalidated.
+
+## Experimental PGN replay loop — 20 September 2026
+
+Firmware 2.6/protocol 7 and the desktop controller now support an experimental
+PGN replay path. The GUI accepts a mainline PGN that starts from the normal
+chess position, plays non-capturing moves for both White and Black, waits 10
+seconds after the last move, then sends reverse `RETURN` moves to restore the
+standard position. Its **Loop after restore** toggle repeats that sequence.
+
+This deliberately rejects captures, en passant, castling, promotions, and PGNs
+with a custom FEN start. Those actions require physically validated capture
+storage, replacement, and collision-safe routing; they do not exist yet. The
+firmware compiled for Arduino Uno using 19,146 bytes of flash and 858 bytes of
+RAM. It was not uploaded and no physical PGN replay was run, so this remains
+experimental software only.
+
+The firmware was subsequently uploaded to `/dev/ttyUSB0` after the GUI serial
+connection was closed. A read-only status query confirmed controller version
+2.6, protocol 7, the `a1` coordinate contract, and both-side automation. The
+upload reset manual home and board confirmation. No axis movement or physical
+PGN replay was commanded.
