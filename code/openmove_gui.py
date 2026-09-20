@@ -7,8 +7,8 @@ import argparse
 import io
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
+from html import escape
 
 import chess
 import chess.pgn
@@ -204,8 +204,11 @@ class SerialController(QObject):
                 self._update_status(line.removeprefix("info:"))
             if line.startswith(("ok:", "error:")):
                 with self._condition:
-                    self._response = line
-                    self._condition.notify_all()
+                    # Unsolicited lines (e.g. an idle emergency-stop notice)
+                    # must not satisfy the next command.
+                    if self.pending_command is not None:
+                        self._response = line
+                        self._condition.notify_all()
 
     def _update_status(self, fields: str) -> None:
         for field in fields.split(","):
@@ -355,7 +358,6 @@ class OpenMoveWindow(QMainWindow):
         self.board = chess.Board()
         self.serial = SerialController()
         self.pending_success: Callable[[], None] | None = None
-        self.logs: deque[str] = deque(maxlen=2000)
         self.jog_mm = 10
         self.playback_moves: list[chess.Move] = []
         self.playback_index = 0
@@ -459,6 +461,7 @@ class OpenMoveWindow(QMainWindow):
         self.log_view.setReadOnly(True)
         self.log_view.setMinimumHeight(110)
         self.log_view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.log_view.document().setMaximumBlockCount(2000)
         panel_layout.addWidget(self.log_view, 1)
         splitter.addWidget(panel)
         splitter.setStretchFactor(0, 1)
@@ -608,8 +611,7 @@ class OpenMoveWindow(QMainWindow):
         else:
             self.notice.setText(f"{command} completed.")
 
-    def _command_failed(self, _command: str, message: str) -> None:
-        del _command
+    def _command_failed(self, command: str, message: str) -> None:
         if self.playback_active:
             self.playback_active = False
             self.playback_generation += 1
@@ -618,6 +620,14 @@ class OpenMoveWindow(QMainWindow):
         self.connect_button.setEnabled(True)
         self._set_connected(self.serial.connected)
         self._show_error(message)
+        if command != "status":  # A failing status query must not retry forever.
+            QTimer.singleShot(400, self._refresh_status)
+
+    def _refresh_status(self) -> None:
+        # The firmware may have dropped home/board trust; never trust the cache.
+        if self.serial.connected and not self.serial.pending_command and not self.playback_active:
+            # No-op callback keeps the failure notice visible.
+            self._send("status", success=lambda: None, timeout=5.0)
 
     def _home(self) -> None:
         answer = QMessageBox.question(self, "Set manual origin", "Is the carriage exactly at the a1 center?")
@@ -689,6 +699,13 @@ class OpenMoveWindow(QMainWindow):
         except ValueError as error:
             self._show_error(str(error))
             return
+        # Re-read firmware trust state so a stale cache cannot start playback.
+        self._send("status", success=lambda: self._begin_pgn(moves), timeout=5.0)
+
+    def _begin_pgn(self, moves: list[chess.Move]) -> None:
+        if not self._motion_ready() or self.board.fen() != chess.STARTING_FEN:
+            self._show_error("Controller lost home or board confirmation; Set Home and Reset Board first")
+            return
         self.playback_moves = moves
         self.playback_index = 0
         self.playback_active = True
@@ -739,13 +756,26 @@ class OpenMoveWindow(QMainWindow):
 
     def _pgn_restore_completed(self) -> None:
         if self.loop_pgn_checkbox.isChecked():
-            self.notice.setText("Standard position restored. Replaying PGN.")
-            self.playback_index = 0
-            self._play_next_pgn_move()
+            self.notice.setText("Standard position restored. Verifying controller before replay.")
+            self._send("status", success=self._loop_pgn, timeout=5.0, playback=True)
             return
         self.playback_active = False
         self.notice.setText("Standard position restored. PGN loop is off.")
         self._set_connected(self.serial.connected)
+
+    def _loop_pgn(self) -> None:
+        if not self.playback_active:
+            return
+        status = self.serial.status
+        if (status.get("homed") != "1" or status.get("board_confirmed") != "1"
+                or self.board.fen() != chess.STARTING_FEN):
+            self.playback_active = False
+            self._set_connected(self.serial.connected)
+            self._show_error("Loop stopped: controller lost home or board confirmation")
+            return
+        self.notice.setText("Standard position restored. Replaying PGN.")
+        self.playback_index = 0
+        self._play_next_pgn_move()
 
     def _render_board(self) -> None:
         self.board_widget.board = self.board.copy(stack=False)
@@ -758,6 +788,7 @@ class OpenMoveWindow(QMainWindow):
         try:
             self.serial.abort()
             self.notice.setText("Abort sent. Re-home and reset the board before movement.")
+            QTimer.singleShot(600, self._refresh_status)
         except RuntimeError as error:
             self._show_error(str(error))
 
@@ -785,6 +816,9 @@ class OpenMoveWindow(QMainWindow):
 
         key = event.key()
         modifiers = event.modifiers()
+        if self.playback_active and key != Qt.Key.Key_Q:
+            super().keyPressEvent(event)
+            return
         if modifiers == Qt.KeyboardModifier.ShiftModifier and key == Qt.Key.Key_Right:
             self._jog("x", "+")
         elif modifiers == Qt.KeyboardModifier.ShiftModifier and key == Qt.Key.Key_Left:
@@ -820,8 +854,7 @@ class OpenMoveWindow(QMainWindow):
 
     def _log(self, line: str) -> None:
         prefix = "" if line.startswith(">") else "< "
-        self.logs.append(prefix + line)
-        self.log_view.setPlainText("\n".join(self.logs))
+        self.log_view.append(escape(prefix + line))
         self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
 
     def _show_error(self, message: str) -> None:

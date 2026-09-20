@@ -6,7 +6,7 @@
 // field independently: a1 is the only manual home, white starts on ranks 1-2,
 // +X advances files a->h, and +Y advances ranks 1->8.
 const uint8_t PROTOCOL_VERSION = 7;
-const char FIRMWARE_VERSION[] = "2.6";
+const char FIRMWARE_VERSION[] = "2.7";
 
 // Confirmed CNC Shield V3 wiring.
 const uint8_t A_STEP_PIN = 2;
@@ -92,6 +92,14 @@ KnightPlan knightPlan;
 int8_t plannerParent[64];
 uint8_t plannerQueue[64];
 
+// Host UIs cache status; report every loss of trust so they never go stale.
+void announceTrustState() {
+  Serial.print(F("info:homed="));
+  Serial.print(manuallyHomed ? 1 : 0);
+  Serial.print(F(",board_confirmed="));
+  Serial.println(boardTrusted ? 1 : 0);
+}
+
 void stopController() {
   digitalWrite(ENABLE_PIN, HIGH);
   magnetActuator.writeMicroseconds(ACTUATOR_RETRACT_US);
@@ -104,6 +112,7 @@ void stopController() {
   emergencyDuringCommand = true;
   inputLength = 0;
   discardLine = true;
+  announceTrustState();
 }
 
 bool emergencyRequested();
@@ -901,6 +910,7 @@ void executeChessMove(const char *moveText) {
   if (!mechanicallyMovePiece(sourceFile, sourceRank, destinationFile, destinationRank)) {
     boardTrusted = false;
     if (motionAborted) return;
+    announceTrustState();
     Serial.println(F("error:piece-move-failed; physical-state-may-be-uncertain"));
     return;
   }
@@ -953,6 +963,7 @@ void returnPiece(const char *moveText) {
   if (!mechanicallyMovePiece(sourceFile, sourceRank, destinationFile, destinationRank)) {
     boardTrusted = false;
     if (motionAborted) return;
+    announceTrustState();
     Serial.println(F("error:return-piece-failed; physical-state-may-be-uncertain"));
     return;
   }
@@ -1097,6 +1108,7 @@ void processCommand(char *command) {
     if (actuatorPulseUs != ACTUATOR_RETRACT_US) boardTrusted = false;
     releaseMagnet();
     if (motionAborted) return;
+    announceTrustState();
     Serial.println(F("ok:motors-disabled; position-lost; run HOME before moves"));
   } else {
     executeChessMove(originalCommand);

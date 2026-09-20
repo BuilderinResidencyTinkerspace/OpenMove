@@ -97,6 +97,7 @@ Early prototype — mechanical development. The immediate objective is to build 
   2.6, protocol 7, both-side automation, and the coordinate contract. Upload
   reset manual home and board confirmation; no axis motion or physical PGN
   replay was performed.
+- On 2026-09-20 a robustness pass over the PGN replay path changed firmware to 2.7 (protocol still 7) and the GUI. Firmware now emits `info:homed=..,board_confirmed=..` whenever home/board trust is lost (emergency stop, failed move or RETURN, DISABLE), so the GUI status cache no longer goes stale. The GUI refreshes status after any failure or abort, re-reads status before starting PGN playback and before each loop replay, ignores unsolicited `ok:`/`error:` lines when no command is pending, gates keyboard shortcuts during playback, and appends to the log instead of rebuilding it. Verified only by a headless GUI test against a scripted fake controller and a host g++ syntax check of the sketch with stub Arduino headers; it has NOT been compiled with the AVR toolchain, uploaded, or run on hardware. A failed or aborted PGN still leaves the physical board unrestored; Set Home and Reset Board remain required after such a failure.
 
 ## Unknown or unvalidated
 
