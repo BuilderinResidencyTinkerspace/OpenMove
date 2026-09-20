@@ -45,18 +45,20 @@ language, and serial protocol are not final decisions.
 
 ## Current software status
 
+The Uno firmware is currently experimental version 2.7 / protocol 7. It has a
+manual-home workflow, guarded jog/square commands, actuator endpoints, and an
+experimental non-capture PGN replay mode. The desktop GUI refuses motion if the
+firmware reports an incompatible coordinate contract or lost board trust.
+
+The physical coordinate contract is `a1 = (0, 0)`, positive X from a-to-h,
+positive Y from rank 1-to-8, with a measured 44 mm square pitch. Small positive
+X/Y jog directions have been physically confirmed; full-square accuracy and
+repeatability have not.
+
 An experimental [cloud Stockfish service](https://github.com/BuilderinResidencyTinkerspace/OpenMove/tree/main/stockfiash)
-now provides a
-narrow authenticated `FEN → UCI move` API. It runs Stockfish 17.1 in a constrained
-container on the `az-vm` SSH target.
-
-The deployment is bound to VM loopback at `127.0.0.1:8080`, not the public
-internet. Health, authentication rejection, invalid-position rejection, and a
-real engine search have been tested. It is not connected to the chessboard.
-
-The missing host controller is a deliberate boundary: cloud output must never
-trigger hardware directly. The host must confirm that the board state has not
-changed and that the returned move remains legal.
+also provides a narrow authenticated `FEN → UCI move` API. It is not connected
+to the board. A host controller must verify current game state before any engine
+output can become hardware motion.
 
 ## Evidence so far
 
@@ -104,4 +106,13 @@ avoid testing the actual invention.
 
 ## Weekly logs
 
-- [Week 00](week-00.md)
+- [Week 00](week-00.md) — the original idea
+- [Week 01](week-01.md) — power, drivers, and a measured VREF starting point
+- [Week 02](week-02.md) — the first coordinated smoke test
+- [Week 03](week-03.md) — the servo-driven magnet mechanism
+- [Week 04](week-04.md) — an experimental Stockfish service
+- [Week 05](week-05.md) — guarded serial control
+- [Week 06](week-06.md) — making coordinates testable
+- [Week 07](week-07.md) — white-side motion firmware
+- [Week 08](week-08.md) — correcting the physical mapping
+- [Week 09](week-09.md) — experimental PGN replay and trust recovery

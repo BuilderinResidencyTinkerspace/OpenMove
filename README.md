@@ -1,93 +1,104 @@
 # OpenMove
 
-OpenMove is an experimental automatic chessboard: a player makes a move, a host
-computer maintains the game state and asks Stockfish for a reply, and an XY
-mechanism moves the responding piece under the board.
+OpenMove is my attempt to build an automatic chessboard that can move pieces
+from underneath the board. The idea is straightforward. The implementation is
+not. Magnets, belts, loose tolerances, and chess pieces have opinions.
 
-The project is not a finished autonomous chessboard. The current engineering
-priority is validating repeatable XY motion. Position sensing, the pickup
-mechanism, full chess-state integration, and end-to-end play remain unvalidated.
+Right now this is an **experimental XY-motion prototype**, not an autonomous
+chessboard. The current job is proving that the carriage can move repeatably
+between squares. Everything above that layer—pickup, sensing, engine play, and
+a complete game—waits its turn.
 
-## System boundary
+## What exists today
+
+| Part | Current direction | Reality check |
+| --- | --- | --- |
+| Controller | Arduino Uno + CNC Shield V3 | Firmware 2.7 / protocol 7 uploaded |
+| Motion | 2 × NEMA 17, 2 × DRV8825, GT2 belts | Experimental; full travel unvalidated |
+| Linear support | 2 × 4 mm × 300 mm rods | Experimental |
+| Pickup | MG90S servo + permanent magnet | Mechanism exists; piece pickup unvalidated |
+| Mapping | `a1` origin, X a→h, Y 1→8, 44 mm pitch | Jog directions confirmed; accuracy unmeasured |
+| Desktop control | PySide6 GUI and terminal UI | Experimental, with firmware trust checks |
+| Chess replay | Non-capture standard-start PGNs only | Software path only; no physical replay yet |
+| Sensing | 8 × 8 Hall grid is the idea | Not built or validated |
+| Engine | Containerized Stockfish API | Separate from the physical board |
+
+The board will not reliably play a game yet. Captures, castling, en passant,
+promotion, automatic homing, full-square repeatability, and collision clearance
+are all unfinished. Calling it “AI chessboard complete” now would be LinkedIn
+fiction with stepper motors.
+
+## The split that keeps this project sane
 
 ```text
-player move
-    ↓
-position sensing (planned)
-    ↓
-host controller ──HTTPS──> Stockfish API
-    ↓                         ↓
-validates game state      returns UCI move
-    ↓
-Arduino motion command
-    ↓
-XY mechanism + magnetic pickup
+physical board ──> host controller ──> chess engine
+      ^                   |
+      |                   v
+XY carriage <──── Arduino low-level motion
 ```
 
-The Arduino is intentionally limited to low-level hardware control. Chess rules,
-game state, Stockfish, UI, and future online integrations belong on the host
-computer. An engine response must be validated against the host's current game
-state before any physical movement begins.
+The Arduino handles pins, steps, timing, and the magnet actuator. The host is
+responsible for chess rules, game state, UI, and any future online work. Engine
+output never gets to move hardware by itself; the host must confirm it still
+matches the board state first.
 
-## Current prototype
+## Hardware direction
 
-| Area | Direction | Status |
-| --- | --- | --- |
-| Controller | Arduino Uno + CNC Shield V3 | Available; motion unvalidated |
-| Motion | 2 × NEMA 17, 2 × DRV8825, GT2 belts | Experimental |
-| Linear support | 2 × 4 mm × 300 mm stainless-steel rods | Experimental |
-| Pickup | Servo-operated permanent magnet | Not finalized |
-| Motion power | 12 V target | Unvalidated |
-| Position sensing | Planned 8 × 8 Hall-effect sensor grid | Architecture undecided |
-| Chess engine | Containerized Stockfish 17.1 API | Deployed experimentally |
-| Host controller | Not implemented | Blocker for integration |
+- Arduino Uno and CNC Shield V3
+- Two NEMA 17 motors and two DRV8825 drivers
+- GT2 belt drive and two 4 mm × 300 mm stainless-steel rods
+- 12 V motion-power target
+- MG90S servo driving a 3D-printed permanent-magnet mechanism
 
-## Cloud Stockfish API
+These are prototype decisions, not a shopping list carved into stone. The rod
+choice, XY kinematics, pickup design, sensing architecture, host language, and
+serial protocol can change when tests give a good reason.
 
-The experimental service lives in [`stockfiash/`](stockfiash/README.md). The
-misspelled directory name is retained for compatibility with the initial
-prototype.
+## Running the experimental tools
 
-It is deployed on the `az-vm` SSH target, restart-enabled and bound to
-`127.0.0.1:8080`. It is deliberately not public: DNS, TLS ingress, stronger
-device authentication, and rate limiting still need to be designed.
+### Firmware
 
-Verified warm VM-local response times are approximately 59 ms for a 50 ms
-search, 255 ms for a 250 ms search, and 506 ms for a 500 ms search. Searches are
-serialized within one service instance.
-
-Run it locally:
+The sketch is [`code/openmove_chess/openmove_chess.ino`](code/openmove_chess/openmove_chess.ino).
+Compile/upload it for an Arduino Uno with the Arduino IDE or Arduino CLI.
 
 ```bash
-cd stockfiash
-cp .env.example .env
-# Replace the placeholder API key in .env.
-docker compose up --build
+arduino-cli compile --fqbn arduino:avr:uno code/openmove_chess
+arduino-cli upload --port /dev/ttyUSB0 --fqbn arduino:avr:uno code/openmove_chess
 ```
 
-See the [service documentation](stockfiash/README.md) for API requests,
-deployment constraints, security requirements, and failure handling.
+An upload clears manual home and board confirmation. Set the carriage at the
+real `a1` centre, then home and reset/confirm the board before requesting any
+movement. Start with small jogs; do not jump straight to a PGN because you are
+feeling brave.
 
-## Repository layout
+### Desktop GUI
 
-- `cad/` — mechanical drawings and reference assets
-- `code/` — firmware and future host-controller software
-- `docs/` — project overview and weekly Builder-in-Residence logs
-- `stockfiash/` — experimental Stockfish HTTP API, tests, and container setup
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r code/requirements-gui.txt
+python code/openmove_gui.py --port /dev/ttyUSB0
+```
 
-## Documentation
+The GUI is deliberately strict about the controller mapping and trust state. If
+home or board confirmation is lost, stop, re-home, and reset the board. A
+failed move or replay does not put physical pieces back for you.
 
-- [Project overview](docs/index.md)
-- [Week 00 engineering log](docs/week-00.md)
+For the lower-level coordinated motor/servo test, read
+[`code/hardware_smoke_test/README.md`](code/hardware_smoke_test/README.md)
+before uploading it. In particular: the servo needs suitable regulated 5 V
+power with common ground, never the 12 V motor supply.
 
-## Next engineering steps
+## Project map
 
-1. Validate XY travel, repeatability, belt tension, rod rigidity, and failure
-   behavior on the physical prototype.
-2. Add and validate homing/calibration.
-3. Validate the magnetic pickup before attempting complete piece movement.
-4. Define a host-controller adapter that rejects stale or illegal engine moves.
+- [`docs/`](docs/index.md) — the build journal, Weeks 0–9
+- [`code/`](code/README.md) — firmware, GUI, terminal UI, and smoke test
+- [`cad/`](cad/README.md) — mechanical files and reference assets
+- [`stockfiash/`](stockfiash/README.md) — the deliberately separate Stockfish API
 
-Cloud chess is not the current critical path. If the mechanics cannot move
-reliably, a brilliant engine merely calculates which piece the machine will
-misplace next.
+## Next useful test
+
+Validate repeatable full-square XY travel from `a1`, then add homing and test
+the magnet moving exactly one piece. That is the next honest milestone. More
+chess logic before that is just avoiding the hard mechanical work with extra
+syntax.
