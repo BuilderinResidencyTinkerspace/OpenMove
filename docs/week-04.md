@@ -58,3 +58,49 @@ That extra validation matters. A chess engine move is only useful if it still ma
 * The engine ran inside a container.
 * The service was kept separate from the Arduino and physical hardware.
 * Basic API behaviour was tested before treating it as part of the project.
+
+## What actually crosses the API boundary
+
+FEN describes a chess position, including whose turn it is and the extra state
+needed to interpret it. UCI move notation describes a move using its source and
+destination squares. For example, `e2e4` asks for the piece on e2 to move to e4.
+It says nothing about belt tension, servo travel, or whether a pawn is currently
+stuck to the underside of the board.
+
+The [API implementation](../stockfiash/app/main.py) accepts a complete FEN and
+a search time from 50 to 5000 milliseconds. It rejects malformed or invalid
+positions and games that are already over. A missing server API key prevents
+move requests from being served, and a wrong client key is rejected.
+
+The engine response can contain a best move and an optional ponder move. The
+host still needs to decide whether the best move is executable on the physical
+board. A legal capture is an excellent example: Stockfish can recommend it
+long before this prototype has a validated place to put the captured piece.
+
+## The deployment was intentionally small
+
+The recorded deployment runs under `/home/mishal/openmove-stockfiash` on the
+`az-vm` target. Docker binds the service to `127.0.0.1:8080`, with automatic
+restart, a read-only filesystem, and limits of one CPU and 512 MiB of memory.
+Access is local to the VM or through an SSH tunnel. Public DNS and TLS ingress
+remain future work.
+
+The recorded warm, VM-local response times were approximately 59 ms for a
+50 ms search, 255 ms for 250 ms, and 506 ms for 500 ms. Those measurements do
+not include a board talking over the internet. Concurrent searches queue inside
+one instance, so they also do not establish multi-user throughput.
+
+Five API unit tests were recorded as passing. The successful-move test mocks
+the engine response; that checks the API contract, while the VM timing results
+cover a different layer. Neither result says anything about a physical pawn.
+
+## What I would carry forward
+
+The useful outcome is a small engine service with a clear boundary. Keeping
+that boundary also leaves room for a local Stockfish adapter later, when
+internet access is unavailable or cloud hosting stops being convenient.
+
+The [service README](../stockfiash/README.md) contains the run and deployment
+instructions. With this experiment recorded, the immediate project priority
+returns to the XY prototype. The board already has access to plenty of chess
+intelligence. What it needs next is evidence that it can reach a square.

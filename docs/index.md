@@ -60,6 +60,40 @@ also provides a narrow authenticated `FEN → UCI move` API. It is not connected
 to the board. A host controller must verify current game state before any engine
 output can become hardware motion.
 
+## How to read this journal
+
+The weekly entries follow the build from the original idea through electronics,
+pickup parts, serial control, coordinate corrections, and experimental replay.
+Earlier entries describe the version used at that point. In particular,
+Week 7's white-only firmware and Week 8's intermediate origin labels are
+historical steps, not instructions to configure the current controller.
+
+The original opening story, photos, and detailed September notes remain in
+place. Week 0 still contains the original technical updates; Weeks 8 and 9
+explain their context alongside later work.
+
+**Record discrepancy:** Week 9 and the root README report that firmware 2.7
+was AVR-compiled and uploaded, while agent memory explicitly says it was not.
+The source declares 2.7 / protocol 7, but the installed version remains
+unconfirmed in this documentation until those records are reconciled. See
+[Week 9's evidence note](week-09.md#the-upload-record-needs-reconciliation).
+
+## What is implemented, and what is measured
+
+| Layer | Existing evidence | Still to establish |
+| --- | --- | --- |
+| Bench electronics | Coordinated slow motor/servo test reported working | Current limits, temperature difference, representative load |
+| Board mapping | Measured 44 mm pitch; positive X/Y jog directions confirmed | Full-square error, repeatability, full-board reach |
+| Pickup | Printed mechanism documented | Repeatable pickup, transport, release, neighbour clearance |
+| Manual control | Firmware, terminal UI, desktop GUI | Physical validation of the complete operating workflow |
+| PGN replay | Both-side software sequence and fake-controller checks | Physical replay, restoration, and recovery |
+| Engine | Separate API tests and recorded VM measurements | Connection to a trusted physical board state |
+| Position sensing | Proposed Hall grid | Sensor choice, PCB, scanning, and validation |
+
+The documentation describes an intended host/Arduino split. The experimental
+firmware currently contains chess-state and move-validation code as well as
+motion control, so that architectural separation is still work to finish.
+
 ## Evidence so far
 
 - Stockfish API unit tests: 5 passing.
