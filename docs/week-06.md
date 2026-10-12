@@ -1,85 +1,53 @@
-# Week 6 — A Coordinate System Is Not a Vibe
+# Week 6 — Figuring Out What “Go to e4” Means
 
-**Goal this week:** Make the firmware's idea of a chess square explicit enough
-to test it against the actual machine.
+**Goal this week:** Make the board coordinates clear enough to test.
 
-Writing `goto e4` looks cute until the carriage heads toward a different corner
-than the one in your head. The early controller revisions made that risk very
-obvious: motor direction, H-bot transforms, manual home, and chess notation
-were all tightly coupled.
+`GOTO e4` is a very short command for something with this many assumptions.
+Where is a1? Which way is positive X? How far apart are the squares? And what
+do the two motors need to do to get there?
 
-## The useful part: fewer hidden assumptions
+I needed those answers to agree between the firmware, the interface, and the
+actual board. Up to this point, too much depended on how I thought the machine
+was facing.
 
-The motion firmware was tightened around a manual-home workflow and explicit
-status reporting. The controller can report its coordinate contract, and the
-host tools can refuse to issue chess motion when the connected firmware does
-not match the expected mapping.
+## From a square to two motors
 
-That is not glamorous work. It is also the difference between a mapping mistake
-being a visible error and it becoming a very confident rook relocation.
+The firmware first turns the square into an X/Y distance using the origin and
+square spacing. It then turns that distance into motor steps using the
+experimental H-bot mapping and calibration.
 
-## Still experimental
+Both motors contribute to carriage movement in that mapping. Reversing one
+motor is not necessarily the same as reversing the board's X axis. I needed
+to keep those changes separate so I could tell which assumption a test was
+actually checking.
 
-At this point, the origin label, positive-axis directions, steps-per-millimetre
-calibration, and square pitch were not final. The firmware could compile and be
-uploaded, but compilation only proves that C++ survived the compiler. It says
-nothing about where a magnet ends up in real space.
+At this stage, the origin label, directions, square pitch, and steps per
+millimetre were still being worked out. The 4 mm rods, belt arrangement, and
+pickup mechanism were also prototype choices.
 
-The 4 mm rods, belt geometry, H-bot transform, and pickup mechanism also
-remained prototype choices. Nothing here promoted them to final hardware.
+## Making the firmware explain itself
 
-## Three translations hiding inside one square name
+The controller's status reporting was expanded around the manual-home
+workflow. Later revisions report the origin and axis directions explicitly,
+so the interface can check them before allowing chess movement.
 
-A request such as `GOTO e4` passes through several assumptions before anything
-moves:
+That matters because two programs can agree that `e4` is valid text while
+meaning completely different places. A connection opening successfully does
+not catch that. The host needs to ask which mapping the firmware is using.
 
-```text
-chess square          board distance          motor targets
-    e4        →       X/Y in mm       →      A/B step counts
-                      origin + pitch         belt transform + scale
-```
+The [physical tests in Week 8](week-08.md) are where the wrong assumptions
+became obvious. I have kept that history because the intermediate answers
+explain why the final mapping changed.
 
-The square name depends on the board orientation. The distance depends on the
-measured square pitch and where zero was assigned. The motor targets depend on
-the belt arrangement, motor directions, and steps-per-millimetre calibration.
-A mistake in any one of those layers can produce a believable status message
-and a carriage sitting somewhere deeply unhelpful.
+## What still needed measuring
 
-For the experimental H-bot transform, both motors contribute to XY movement.
-Changing one motor direction is therefore not interchangeable with reversing
-one logical board axis. That distinction became important in
-[Week 8's physical mapping tests](week-08.md).
+The Arduino counts the steps it sends. It cannot tell whether the carriage
+missed one or whether I moved it by hand. Setting a travel limit in code also
+does not measure how much space the real mechanism has.
 
-## Why the host needs more than a version number
+My next test was to check direction with small jogs, then measure the distance,
+then see whether repeated moves returned to the same point. Until then, a
+successful compile and upload only meant I was ready to test the mapping.
 
-The host needs to know what the firmware means by a coordinate. An origin
-label, file direction, rank direction, and piece orientation form a contract
-between the two programs. Later revisions expose those fields in status and
-change the protocol when the interpretation changes.
-
-A host that assumes a1 while the firmware assumes a different corner can still
-send perfectly valid text. Syntax checking will happily approve the wrong
-journey. This is why the desktop interface checks the reported mapping before
-allowing chess motion.
-
-## A reported position is still an estimate
-
-The firmware counts commanded motor steps. Without independent position
-feedback, its stored coordinates cannot prove that the mechanism followed
-those steps. A missed step, slipping belt, or manually displaced carriage can
-separate the internal position from the real one.
-
-This is also why configured travel bounds need physical validation. A number
-in the sketch can reject a request outside a rectangle; it cannot establish
-that the assembled machine has that much unobstructed travel.
-
-The proposed validation sequence is direction first, then scale, then repeated
-returns to the same point. Record commanded distance, measured distance, and
-return error for each axis. Until those measurements exist, changing more
-constants only makes the uncertainty harder to track.
-
-## Next
-
-Run the smallest physical tests first: set the real `a1`, jog positive X and Y,
-and compare a commanded square with the board. One measured fact beats three
-pages of coordinate folklore.
+This week was mostly about making the assumptions visible. I still needed to
+put a ruler beside the machine.

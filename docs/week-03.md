@@ -52,34 +52,21 @@ There were still a few fairly important questions:
 
 The plan was there. The printed parts were there. The physics was still waiting to give its opinion.
 
-## Pickup is a distance problem
+## The part I still had to test
 
-A permanent magnet does not have an off command. The servo changes the distance
-between the magnet and the piece, which is how this prototype is meant to switch
-between carrying a piece and leaving it alone.
+A permanent magnet stays magnetic, which is mildly inconvenient when the whole
+job involves letting go of things. The servo has to move it far enough away
+that the piece stays behind while the carriage moves underneath the board.
 
-That makes both endpoints important. At the engaged endpoint, the coupling
-needs to be strong enough to move the piece through the board. At the released
-endpoint, it needs to be weak enough that travelling underneath another piece
-does not invite that piece along for the ride.
+That gives me two endpoints to figure out: close enough to carry a piece, and
+far enough away to release it without disturbing the next one. A commanded
+servo angle does not tell me whether either of those happened.
 
-A servo reaching its commanded angle only tells me what I asked it to do. It
-does not prove that the printed linkage reached the intended height, that a
-piece attached, or that the piece let go. The mechanism has no documented
-pickup feedback yet.
+Once the XY movement is repeatable, the plan is to try one piece over a short,
+clear route and repeat the pickup and release. I need to record the board
+thickness, magnet position, piece base, and servo endpoints so I can compare
+changes properly. This test is still experimental; there is no successful
+piece-transfer result to report here yet.
 
-## The smallest useful pickup experiment — Experimental
-
-Once XY movement is repeatable, the first pickup test should use one piece and
-a short, clear route. Record the board thickness, magnet arrangement, piece
-base, actuator endpoints, and whether pickup and release succeed repeatedly.
-Those details turn “it worked once” into a result someone can reproduce.
-
-The useful failure notes are equally specific: binding in the printed parts,
-slipping during travel, dragging after release, or disturbing a neighbouring
-piece. None of those outcomes has been established here. This is the proposed
-test, not a retrospective victory lap.
-
-Mechanical assets live in [the CAD directory](../cad/README.md). The photos
-above document the first printed parts; they should stay with the story even
-if a later mechanism replaces them.
+The mechanical files live in [cad/](../cad/README.md). The photos above are the
+first printed parts, before all those questions had answers.

@@ -58,27 +58,13 @@ So the important result from this week was not “the drivers are perfectly conf
 * Keep the DRV8825 VREF values at approximately 0.65 V until the driver hardware and current limits are properly verified.
 * Treat all motion hardware as experimental until it works reliably under a real mechanical load.
 
-## The number I still could not put in the table
+## What I needed to check next
 
-The missing number was motor current. I had two voltage readings, but without
-the sense-resistor markings I could not turn those into a trustworthy current
-limit. Copying someone else's potentiometer position would only copy their
-confidence, which unfortunately does not come with a warranty.
+I still needed to read the sense-resistor markings on both drivers and work out
+the actual current limits. The earlier motor hum and the warmer Y driver also
+needed a proper comparison under the same conditions. I had observations, but
+no clear explanation yet.
 
-The next experiment needs to identify each driver board, establish its current
-limit, and compare the two channels under the same conditions. The earlier
-humming motor and hotter Y driver belong in that investigation. They are
-observations to explain, not enough evidence to blame a particular component.
-
-There is also a difference between the adapter supplying the system and the
-driver regulating current through a motor winding. Writing “12 V, 3 A” beside
-the adapter does not finish the driver setup. That label describes the supply;
-the driver still needs its own configuration.
-
-## Where this fits in the build
-
-This was the electronics starting point. The next useful evidence came from
-[the coordinated motor-and-servo test in Week 2](week-02.md). The wiring and
-behaviour of that sketch are recorded in the
-[hardware test README](../code/hardware_smoke_test/README.md), so the build
-journal and the thing being uploaded can be checked against each other.
+The next step was a slow test with both motors and the servo. That became
+[Week 2](week-02.md). The [test README](../code/hardware_smoke_test/README.md)
+keeps the wiring details beside the sketch.

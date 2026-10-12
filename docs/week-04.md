@@ -59,48 +59,31 @@ That extra validation matters. A chess engine move is only useful if it still ma
 * The service was kept separate from the Arduino and physical hardware.
 * Basic API behaviour was tested before treating it as part of the project.
 
-## What actually crosses the API boundary
+## The small API behind it
 
-FEN describes a chess position, including whose turn it is and the extra state
-needed to interpret it. UCI move notation describes a move using its source and
-destination squares. For example, `e2e4` asks for the piece on e2 to move to e4.
-It says nothing about belt tension, servo travel, or whether a pawn is currently
-stuck to the underside of the board.
+The [service](../stockfiash/README.md) takes a complete FEN position and a
+search time between 50 and 5000 milliseconds. It checks the position and API
+key before asking Stockfish for a move. The response contains a best move and,
+sometimes, a ponder move.
 
-The [API implementation](../stockfiash/app/main.py) accepts a complete FEN and
-a search time from 50 to 5000 milliseconds. It rejects malformed or invalid
-positions and games that are already over. A missing server API key prevents
-move requests from being served, and a wrong client key is rejected.
+FEN carries the board state; a move such as `e2e4` just names the source and
+destination. The host still has to check whether the physical board can carry
+it out. Stockfish has no idea that I have not figured out where captured pieces
+are supposed to go.
 
-The engine response can contain a best move and an optional ponder move. The
-host still needs to decide whether the best move is executable on the physical
-board. A legal capture is an excellent example: Stockfish can recommend it
-long before this prototype has a validated place to put the captured piece.
+The recorded deployment is under `/home/mishal/openmove-stockfiash` on `az-vm`,
+listening on `127.0.0.1:8080`. It uses one CPU and 512 MiB of memory, a read-only
+filesystem, and automatic restart. I can reach it locally or through an SSH
+tunnel; public DNS and TLS access are still pending.
 
-## The deployment was intentionally small
+The recorded warm responses on the VM took about 59 ms for a 50 ms search,
+255 ms for 250 ms, and 506 ms for 500 ms. Requests queue within one instance.
+Those timings cover the service on the VM, not an internet round trip from the
+board.
 
-The recorded deployment runs under `/home/mishal/openmove-stockfiash` on the
-`az-vm` target. Docker binds the service to `127.0.0.1:8080`, with automatic
-restart, a read-only filesystem, and limits of one CPU and 512 MiB of memory.
-Access is local to the VM or through an SSH tunnel. Public DNS and TLS ingress
-remain future work.
+Five API tests were recorded as passing. The successful-response test uses a
+mock engine, so that checks the request and response handling separately from
+the actual Stockfish measurements.
 
-The recorded warm, VM-local response times were approximately 59 ms for a
-50 ms search, 255 ms for 250 ms, and 506 ms for 500 ms. Those measurements do
-not include a board talking over the internet. Concurrent searches queue inside
-one instance, so they also do not establish multi-user throughput.
-
-Five API unit tests were recorded as passing. The successful-move test mocks
-the engine response; that checks the API contract, while the VM timing results
-cover a different layer. Neither result says anything about a physical pawn.
-
-## What I would carry forward
-
-The useful outcome is a small engine service with a clear boundary. Keeping
-that boundary also leaves room for a local Stockfish adapter later, when
-internet access is unavailable or cloud hosting stops being convenient.
-
-The [service README](../stockfiash/README.md) contains the run and deployment
-instructions. With this experiment recorded, the immediate project priority
-returns to the XY prototype. The board already has access to plenty of chess
-intelligence. What it needs next is evidence that it can reach a square.
+A local engine could use the same interface later. For now, the service exists
+and the next job is back at the board: getting the carriage to move reliably.

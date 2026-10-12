@@ -1,109 +1,63 @@
-# Week 8 — The Board Finally Argued Back
+# Week 8 — I Told It g1. It Went to g8.
 
 **Date:** 19 September 2026
 
-This week was a coordinate-system reality check. The first manual-origin label
-was `h1`. Physical GOTO tests disagreed: `GOTO g1` reached `g8`, and `GOTO h2`
-reached `h7`. That ruled out the label. A later two-axis test ruled out the
-next theory too: the apparent `h8` mapping was an exact 180-degree transform,
-which established the actual machine origin as `a1`.
+I had labelled the manual origin `h1`. Then `GOTO g1` took the carriage to g8,
+and `GOTO h2` took it to h7.
 
-That is not a cute correction. A wrong mapping can move a real carriage to the
-wrong square while software insists it is being helpful. The firmware protocol
-was bumped as incompatible coordinate contracts were corrected so the GUI would
-not quietly drive a newer board with an older assumption.
+The files were right. The ranks were mirrored. At least the mistake was
+consistent, which made it a little easier to investigate.
 
-## The current contract
+The next interpretation was h8. That did not survive testing either: with
+both axes mirrored, `GOTO e2` reached d7, and `GOTO h8` returned to physical
+a1. The mapping was rotated 180 degrees. The actual machine origin was a1.
 
-The current experimental mapping is:
+## Getting the directions straight
 
-```text
-a1 = (0, 0)
-+X = a-file → h-file
-+Y = rank 1 → rank 8
-white pieces = ranks 1–2
-square pitch = 44 mm
-```
+From White's viewpoint, a1 is the bottom-left black square. Positive X should
+move towards b1, and positive Y towards a2. White starts on ranks 1 and 2.
 
-The 44 mm centre-to-centre pitch came from a physical measurement. The existing
-H-bot transform and 40 steps/mm calibration were retained with explicit
-approval; they are still experimental, not magically certified by being in a
-constant.
+Y was already moving the right way. The previous positive X moved from b1
+towards a1, so firmware 2.5 reversed logical X while keeping the experimental
+H-bot transform. I explicitly kept the 40 steps/mm calibration for this test.
 
-Firmware 2.5/protocol 6 compiled and uploaded. Small positive X and Y jogs
-were physically confirmed to match `a1 → b1` and `a1 → a2`. That is a real win,
-but keep the champagne corked: full-square positioning accuracy, repeatability,
-belt tension, rod rigidity, and motion under pickup load are still unmeasured.
+The measured distance between neighbouring square centres was 44 mm. That
+puts b1 at `(44, 0)`, a2 at `(0, 44)`, and h8 at `(308, 308)` when a1 is zero.
+Those are the intended coordinates; I still had to measure how accurately the
+carriage reached them.
 
-## The wrong answers are part of the result
+Firmware 2.5 / protocol 6 compiled and uploaded. The corrected positive-X jog
+was physically confirmed, and the small positive X and Y tests now matched
+a1→b1 and a1→a2. Finally, the direction labels agreed with the board.
 
-The mapping history is worth preserving because each observation ruled out a
-specific assumption:
+## Keeping the interface in sync
 
-| Interpretation being tested | Recorded physical observation | What it showed |
-| --- | --- | --- |
-| Origin labelled h1 | `GOTO g1` reached g8; `GOTO h2` reached h7 | File labels matched, ranks were mirrored |
-| Both axes mirrored from an assumed h8 | `GOTO e2` reached d7; `GOTO h8` returned to physical a1 | The interpretation was rotated 180 degrees |
-| Direct a1 convention before the X correction | Positive Y went a1→a2; positive X went b1→a1 | Logical X needed reversal |
-| Firmware 2.5 / protocol 6 | Corrected positive X jog confirmed | Small positive X/Y directions matched the intended board axes |
+The protocol changed as the mapping changed, and the GUI checks the reported
+origin and directions before allowing chess movement. Otherwise an older
+interface could connect successfully and send commands using the wrong corner.
 
-The original detailed notes remain in
-[Week 0's September update](week-00.md#experimental-corner-origin-update--19-september-2026).
-They include intermediate uploads, the unexpected 1.2 startup banner, the
-serial-port conflict, and no-motion self-tests. Keeping those details makes it
-possible to follow the investigation instead of presenting the final mapping
-as something I knew all along. I very clearly did not.
+The detailed [September notes in Week 0](week-00.md#experimental-corner-origin-update--19-september-2026)
+keep the intermediate uploads and self-tests, including the unexpected 1.2
+startup banner and the upload blocked by the GUI holding the serial port.
+There were several revisions between the first guess and the working jogs.
 
-## What 44 mm means in coordinates
+The GUI also needed to fit my laptop. The display is 1366×768, and Niri gave
+the window roughly 800×628. Its fixed 1180×760 startup size was too large.
+The layout now uses the available screen size, tighter spacing, and a scrolling
+log with up to 2000 lines. Being able to read the controller's reply without
+fighting the window was a useful improvement.
 
-With a1 at zero, square centres follow this experimental mapping:
+## Direction is sorted; distance is next
 
-```text
-                 +Y, towards rank 8
-                  ↑
-a8 (0, 308)       |                     h8 (308, 308)
-                  |
-a2 (0, 44)        |
-a1 (0, 0) --------+--------------------→ +X, towards h
-                    b1 (44, 0)          h1 (308, 0)
-```
+I still needed repeated full-square measurements, return-position checks, and
+testing under pickup load. Belt tension and rod rigidity were also unmeasured.
+The next experimental test is one square out and back on each axis, recording
+actual travel and return error.
 
-There are seven centre-to-centre gaps from a1 to h1: `7 × 44 = 308 mm`.
-That is a calculated coordinate span, not measured usable carriage travel.
-The listed 300 mm rods therefore need particular attention when evaluating
-full-board reach: their nominal length is already shorter than that centre
-span, and their role and mounting in the actual mechanism must be checked.
-This does not approve replacement rods or settle the mechanical design.
+There is a reach question to check too. Seven 44 mm gaps span 308 mm, while
+the listed rods are 300 mm long. Their mounting and role in the mechanism need
+to be checked against the required travel before claiming full-board coverage.
+No hardware replacement has been decided.
 
-The 40 steps/mm value is still the approved experimental calibration. Correct
-direction and correct scale are separate results; one successful positive jog
-cannot certify a 44 mm movement.
-
-## The GUI also had to fit on the actual laptop
-
-The laptop display was 1366×768 at scale 1, while Niri gave the GUI a tile of
-roughly 800×628. A fixed 1180×760 startup size was an optimistic interpretation
-of available space.
-
-The interface was changed to size itself from the available screen geometry,
-use tighter spacing, and keep a usable scrolling log with up to 2000 lines.
-That matters during a hardware experiment: the controller's explanation should
-be visible when it refuses a command. A log pane below the screen is technically
-logging, in the same way a notebook in another building is technically nearby.
-
-## The next measurement — Experimental
-
-Start from a physically established a1 with the pickup released. After small
-jogs confirm direction and clearance, measure repeated one-square movements
-and returns on each axis. Record the actual distances and return offsets,
-along with the calibration and mechanical setup used.
-
-Full-board travel should follow a reach and clearance check. No repeatability
-tolerance has been validated yet, so this log does not award the mechanism a
-pass simply because the endpoint looks close in a photo.
-
-## Next
-
-Measure full-square travel repeatedly from the real `a1`. Only then does it
-make sense to ask the mechanism to carry a piece instead of merely pointing at
-one.
+This week settled the small-jog directions. I am keeping that result separate
+from accuracy because there is still a fair amount of board left to reach.

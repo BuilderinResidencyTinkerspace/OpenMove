@@ -45,42 +45,22 @@ The coordinated low-speed test worked, but it did not explain that difference. I
 
 The motors also had not been tested with belts, rods, carriage friction, or the weight of a pickup system. A motor moving freely on a desk has not yet earned the right to be called an XY mechanism.
 
-## What the sketch actually asked the hardware to do
+## A few details worth keeping
 
-The [test sketch](../code/hardware_smoke_test/hardware_smoke_test.ino) sends
-100 simultaneous step pulses to the two driver channels, pauses, reverses both,
-and repeats. At roughly 50 pulses per second, each run of 100 pulses takes
-about two seconds before the pause. The servo alternates between 30 and
-120 degrees.
+The [sketch](../code/hardware_smoke_test/hardware_smoke_test.ino) sends 100
+pulses to both motors, pauses, reverses them, and repeats. At about 50 steps
+per second, each run takes roughly two seconds. The servo moves between 30
+and 120 degrees. It starts automatically after reset and leaves the drivers
+enabled between movements.
 
-Those are commanded pulses and servo positions. They are not measurements of
-carriage travel or magnet height. There was no assembled XY mechanism in this
-experiment to measure in the first place.
+The X socket uses D2 for STEP and D5 for DIR; the Y socket uses D3 and D6.
+Both share the active-low enable on D8. The servo signal goes through the Z+
+header to D11, with a separate regulated 5 V supply and common ground. The
+12 V adapter is for the motor side.
 
-The confirmed connections are worth keeping close to the result:
+This was the uploaded test that I physically ran and reported working. Since
+both motors were pulsed together, it did not tell me how each channel behaved
+on its own. That still needed checking, especially with the earlier humming
+and temperature difference.
 
-| Signal | Uno pin | Shield connection |
-| --- | --- | --- |
-| Motor A STEP / DIR | D2 / D5 | X driver socket |
-| Motor B STEP / DIR | D3 / D6 | Y driver socket |
-| Shared enable | D8, active-low | Both driver channels |
-| Servo signal | D11 | Z+ header |
-
-The servo receives its signal through that header; its power needs suitable
-regulated 5 V and a shared ground. The motor supply is 12 V. Those two power
-rails do not become interchangeable because their wires fit nearby.
-
-## The result had a very specific boundary
-
-The uploaded coordinated test was physically run and reported to work. That
-supports a small, useful conclusion: this setup could pulse both motors together
-and operate the servo at the chosen test settings.
-
-It does not isolate either motor channel, explain the earlier temperature
-difference, or validate a belt transform. In the later experimental H-bot
-mapping, carriage motion depends on the combination of both motors. Shield
-labels alone cannot tell me which direction the carriage will travel.
-
-The next layer was giving the magnet an actual mechanism to live in:
-[Week 3](week-03.md). The electronics had earned another experiment, not a
-finished-product sticker.
+With this working, I moved on to [the printed magnet mechanism](week-03.md).

@@ -1,98 +1,58 @@
-# Week 5 — Teaching the Board to Say “No”
+# Week 5 — Giving the Board a Few Commands
 
-**Goal this week:** Give the motion prototype a small serial controller without
-pretending that it was ready to play chess.
+**Goal this week:** Control the prototype from a terminal and give it a way to
+report what it was doing.
 
-The motors had already passed a very small bench test. That was useful, but
-“both motors moved” is not a coordinate system, a safety boundary, or a way to
-recover when the carriage gets lost. This week was about putting a boring but
-necessary layer between a terminal command and the hardware.
+The motors had moved in the bench test. Now I needed something more useful
+than uploading a sketch and watching the same movement repeat forever.
 
-## The controller got a vocabulary
+I wanted to ask for a small jog, check the position, move to a square, and stop
+when something went wrong. So the Arduino got a serial controller, and I added
+a [terminal UI](../code/openmove_tui.py) to send commands and read the replies.
 
-The experimental Arduino sketch in
-[`code/openmove_chess/`](../code/openmove_chess/) gained commands for manual
-home, status, jogging, square moves, actuator endpoints, board reset, and an
-emergency stop. It also keeps a small internal chess position so it can reject
-obviously illegal requests instead of letting every typo become motor movement.
+## First, tell it where it is
 
-That does **not** make it a chessboard yet. It is a motion-controller prototype
-wearing a chess notation trench coat.
+The awkward part is that the Arduino does not know where the carriage is when
+it starts. I have to put it at the origin myself and send `HOME`. That assigns
+zero to the current position. There is no automatic search for a corner or a
+limit switch yet.
 
-The important boundary stayed the same: the Uno owns pins, timing, and the
-actuator. A host computer will eventually own game rules, engine calls, and
-anything involving the internet.
+The pieces need their own confirmation. `RESETBOARD` resets the internal board
+to the standard chess position, so the real pieces have to be arranged that
+way first. It would be convenient if the command also tidied the board for me,
+but unfortunately I am still that part of the system.
 
-## A terminal UI, because serial monitors get old fast
+Home and board confirmation are separate because I can know where the carriage
+is while having the pieces in the wrong places, or the other way around.
+After an upload, both need to be established again before chess movement.
 
-[`code/openmove_tui.py`](../code/openmove_tui.py) was added as a thin manual
-control interface. It can send commands and show the controller response; it
-does not bypass the firmware's checks.
+## Sending a command is only half the conversation
 
-The controller starts untrusted after upload. Someone has to set the physical
-home position and explicitly reset/confirm the board before chess-style motion
-is allowed. That is deliberately annoying. An automatic board should be a
-little suspicious of itself before moving pieces around.
+The controller gained commands for status, jogging, square movement, the
+magnet actuator, and an emergency stop. The current serial code uses `busy:`,
+`ok:`, and `error:` replies, with `status:` and `info:` fields to report state.
+That lets the interface wait for an answer instead of assuming a command worked
+because it was sent.
 
-## What this did not prove
+A reported position still comes from counted motor steps. There is no sensor
+checking that the carriage reached it. If the belt slips, the display can be
+wrong even when the command finishes normally.
 
-No physical chess move, square accuracy, clearance, homing repeatability, or
-pickup behaviour was validated here. The coordinate calibration and routing in
-the firmware remained experimental. Software restrictions are not a substitute
-for a carriage that has actually moved under load.
+The [firmware](../code/openmove_chess/openmove_chess.ino) also keeps a small
+chess position and rejects invalid moves. That is part of the current
+prototype; the longer-term plan is to keep full chess logic on the host and
+leave the Uno handling motion and the actuator. The code is not fully split
+that way yet.
 
-## Two different things the operator has to confirm
+## Where I left it
 
-Manual home and board confirmation answer different questions.
+I had a way to talk to the prototype and inspect its state. I had not tested a
+physical chess move, measured square accuracy, or established clearance around
+pieces. Those were still experimental.
 
-`HOME` tells the controller where the carriage is. The operator places it at
-the intended origin and the firmware assigns that location zero. It does not
-search for a switch or discover the corner by itself. Calling a command HOME
-does not quietly install homing hardware.
+The next job was small manual jogs: settle the origin, check both directions,
+and measure the travel. That sounds fairly straightforward. The next few
+entries explain how much room there was to get it wrong.
 
-`RESETBOARD` tells the controller that the pieces match the standard starting
-position. It resets the internal representation; it does not move scattered
-pieces back into place. If the physical board is wrong, this command can make
-the software confidently wrong with it.
-
-That distinction follows the project all the way into replay recovery. Knowing
-where the carriage is and knowing where the pieces are are separate jobs.
-
-## A command needs an ending
-
-A terminal interface also needs to distinguish “I sent something” from “the
-controller finished it.” The current serial implementation uses responses such
-as `busy:`, `ok:`, and `error:`, plus `status:` and `info:` fields for state.
-These are described here as a reading guide to the current source, rather than
-an exact transcript of this week's historical build.
-
-| Command family | What it means | What it cannot establish |
-| --- | --- | --- |
-| `status` | Report the controller's stored state | Independent physical position |
-| `HOME` | Accept the operator's origin | Automatic homing accuracy |
-| `RESETBOARD` | Declare a standard physical setup | Whether pieces really match it |
-| `GOTO` / jog | Request carriage travel | Successful piece transport |
-| Actuator endpoints | Command the magnet mechanism | Measured pickup or release |
-| Abort | Stop the running sequence | Undo movement already performed |
-
-The current implementation can be inspected in the
-[firmware](../code/openmove_chess/openmove_chess.ino),
-[terminal UI](../code/openmove_tui.py), and
-[desktop GUI](../code/openmove_gui.py).
-
-## The architecture still has some prototype baggage
-
-The sketch contains an internal chess board and move checks. That is useful
-for these experiments, but it means the present implementation goes beyond the
-intended long-term split of responsibilities. The host already uses chess
-software in the desktop path; the eventual architecture should keep full game
-rules and reconciliation on that side.
-
-Documenting the intended boundary is useful. Pretending the code already fits
-it perfectly would be creative writing with a USB cable.
-
-## Next
-
-Use small manual jogs to establish a real origin and axis directions, then
-measure one square before allowing the firmware to speak confidently about
-`a1`, `h8`, or anything in between.
+The current [desktop GUI](../code/openmove_gui.py) uses the same controller
+alongside the terminal tool.
